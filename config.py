@@ -81,10 +81,35 @@ GOOGLE_SERVICE_ACCOUNT_FILE = Path(
 
 # If JSON strings are passed as environment variables (e.g. on Railway/Cloud), write them to disk
 def _write_env_json(env_key: str, file_path: Path):
+    """Write a JSON env var to disk, normalizing it to remove control characters.
+
+    Railway's raw editor and copy-paste can inject literal newlines inside the
+    JSON string value, which makes json.loads() raise
+    'Invalid control character at line 1 column N'. We fix this by:
+      1. Stripping surrounding whitespace and quote wrappers.
+      2. Removing all literal CR/LF/tab characters that appear OUTSIDE of
+         proper JSON string escapes (i.e. bare control chars in the raw text).
+      3. Parsing the JSON and re-dumping it so the file is always clean.
+    We always overwrite (not skip-if-exists) so a previously corrupted file
+    is self-healed on the next restart.
+    """
+    import json as _json
     val = os.getenv(env_key)
-    if val and not file_path.exists():
-        # Railway raw editor might leave surrounding single quotes; strip them
-        clean_val = val.strip().strip("'").strip('"')
+    if not val:
+        return
+    # Strip surrounding whitespace and stray quote wrappers added by Railway
+    clean_val = val.strip().strip("'").strip('"').strip()
+    # Remove bare (unescaped) ASCII control characters: \x00-\x1f except
+    # legitimate JSON whitespace (\t \n \r) which json.loads handles fine.
+    # We do a blanket removal of CR and LF because they must NEVER appear
+    # literally inside a JSON string value (only as \n \r escapes).
+    clean_val = clean_val.replace("\r", "").replace("\n", "").replace("\t", " ")
+    try:
+        parsed = _json.loads(clean_val)
+        normalized = _json.dumps(parsed, ensure_ascii=False)
+        file_path.write_text(normalized, encoding="utf-8")
+    except Exception:
+        # Last resort: write as-is and let the caller surface the error
         try:
             file_path.write_text(clean_val, encoding="utf-8")
         except Exception:

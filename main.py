@@ -348,8 +348,23 @@ def _load_google_credentials():
     if token_path.exists():
         try:
             creds = UserCredentials.from_authorized_user_file(str(token_path), scopes)
-        except ValueError:
-            pass
+        except (ValueError, json.JSONDecodeError) as exc:
+            # token.json is corrupted (e.g. Railway env var with embedded newlines).
+            # Delete it so _write_env_json can re-write a clean version on next import,
+            # or so we fall through to the OAuth flow.
+            log.warning("token.json is invalid (%s) — deleting and attempting to re-create.", exc)
+            try:
+                token_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            # Re-trigger the env-var writer now that the file is gone
+            config._write_env_json("GOOGLE_TOKEN_JSON", token_path)
+            # Try loading again with the freshly written (normalized) file
+            if token_path.exists():
+                try:
+                    creds = UserCredentials.from_authorized_user_file(str(token_path), scopes)
+                except (ValueError, json.JSONDecodeError):
+                    creds = None
 
     if creds and creds.valid:
         return creds
@@ -359,8 +374,8 @@ def _load_google_credentials():
             creds.refresh(GoogleAuthRequest())
             token_path.write_text(creds.to_json(), encoding="utf-8")
             return creds
-        except RefreshError:
-            pass
+        except RefreshError as exc:
+            log.warning("Token refresh failed: %s", exc)
 
     flow = InstalledAppFlow.from_client_secrets_file(str(config.GOOGLE_OAUTH_CLIENT_FILE), scopes)
     creds = flow.run_local_server(port=0)
