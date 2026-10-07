@@ -1185,6 +1185,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         config.validate_config(need_google=not args.dry_run)
     except ValueError as exc:
         log.error("Configuration Error: %s", exc)
+        log.error("Fix your environment variables in Railway → Variables tab, then redeploy.")
+        # Sleep before exiting so Railway doesn't restart us 60x per minute
+        time.sleep(60)
         return 1
 
     if args.bot:
