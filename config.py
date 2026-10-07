@@ -74,17 +74,18 @@ GOOGLE_SERVICE_ACCOUNT_FILE = Path(
 )
 
 # If JSON strings are passed as environment variables (e.g. on Railway/Cloud), write them to disk
-if os.getenv("GOOGLE_TOKEN_JSON") and not GOOGLE_OAUTH_TOKEN_FILE.exists():
-    try:
-        GOOGLE_OAUTH_TOKEN_FILE.write_text(os.getenv("GOOGLE_TOKEN_JSON"), encoding="utf-8")
-    except Exception:
-        pass
+def _write_env_json(env_key: str, file_path: Path):
+    val = os.getenv(env_key)
+    if val and not file_path.exists():
+        # Railway raw editor might leave surrounding single quotes; strip them
+        clean_val = val.strip().strip("'").strip('"')
+        try:
+            file_path.write_text(clean_val, encoding="utf-8")
+        except Exception:
+            pass
 
-if os.getenv("GOOGLE_CREDENTIALS_JSON") and not GOOGLE_OAUTH_CLIENT_FILE.exists():
-    try:
-        GOOGLE_OAUTH_CLIENT_FILE.write_text(os.getenv("GOOGLE_CREDENTIALS_JSON"), encoding="utf-8")
-    except Exception:
-        pass
+_write_env_json("GOOGLE_TOKEN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
+_write_env_json("GOOGLE_CREDENTIALS_JSON", GOOGLE_OAUTH_CLIENT_FILE)
 
 # Full Drive scope is required to upload into folders that already exist.
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/drive"]
