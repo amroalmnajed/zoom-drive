@@ -1,1 +1,1 @@
-worker: python main.py --bot
+worker: python -u main.py --bot
