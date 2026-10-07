@@ -28,6 +28,12 @@ ZOOM_ACCOUNT_ID = os.getenv("ZOOM_ACCOUNT_ID", "")
 ZOOM_CLIENT_ID = os.getenv("ZOOM_CLIENT_ID", "")
 ZOOM_CLIENT_SECRET = os.getenv("ZOOM_CLIENT_SECRET", "")
 
+# --------------------------------------------------------------------------- #
+# Telegram Settings
+# --------------------------------------------------------------------------- #
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
 # Server-to-Server OAuth apps cannot use the "me" alias. Put the email address
 # (or Zoom user ID) of the account whose cloud recordings should be processed.
 ZOOM_USER_ID = os.getenv("ZOOM_USER_ID", "")
@@ -158,8 +164,8 @@ def validate_config(need_google: bool = True) -> None:
     """Raise ValueError with a readable message if something is misconfigured."""
     problems: list[str] = []
 
-    for name in ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_USER_ID"):
-        if not globals()[name]:
+    for name in ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_USER_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        if not globals().get(name):
             problems.append(f"Missing {name} (set it in .env or the environment).")
 
     if LOOKBACK_DAYS < 1:
@@ -187,10 +193,3 @@ def validate_config(need_google: bool = True) -> None:
 
     if problems:
         raise ValueError("Configuration problems:\n  - " + "\n  - ".join(problems))
-
-
-# --------------------------------------------------------------------------- #
-# Telegram Settings
-# --------------------------------------------------------------------------- #
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")

@@ -45,7 +45,7 @@ def setup_logging() -> None:
     log.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S")
     console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.WARNING)
+    console.setLevel(logging.INFO)
     console.setFormatter(fmt)
     file_handler = logging.FileHandler(config.LOG_FILE, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
@@ -1165,6 +1165,12 @@ def bot_mode(dry_run: bool = False) -> None:
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     setup_logging()
+    
+    try:
+        config.validate_config(need_google=not args.dry_run)
+    except ValueError as exc:
+        log.error("Configuration Error: %s", exc)
+        return 1
 
     if args.bot:
         bot_mode(dry_run=args.dry_run)
