@@ -508,9 +508,15 @@ def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, desc
     Start a Google Drive resumable upload session and return the upload URI.
     Uses the requests library directly to avoid httplib2's 308-as-redirect bug.
     """
+    # Proactively refresh if we already know it's expired
+    if not creds.valid and creds.refresh_token:
+        creds.refresh(GoogleAuthRequest())
+        config.GOOGLE_OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+
     token = creds.token
     if not token:
         creds.refresh(GoogleAuthRequest())
+        config.GOOGLE_OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
         token = creds.token
 
     headers = {
@@ -525,12 +531,25 @@ def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, desc
         "description": description,
         "copyRequiresWriterPermission": True,
     }
-    resp = requests.post(
-        "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,size,webViewLink",
-        headers=headers,
-        json=metadata,
-        timeout=30,
-    )
+    
+    def do_post():
+        return requests.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,size,webViewLink",
+            headers=headers,
+            json=metadata,
+            timeout=30,
+        )
+
+    resp = do_post()
+    
+    # If Drive rejects the token despite our checks, force a refresh and retry
+    if resp.status_code == 401 and creds.refresh_token:
+        log.warning("Drive returned HTTP 401. Forcing a token refresh and retrying...")
+        creds.refresh(GoogleAuthRequest())
+        config.GOOGLE_OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        headers["Authorization"] = f"Bearer {creds.token}"
+        resp = do_post()
+
     if resp.status_code != 200:
         raise RuntimeError(f"Failed to initiate Drive resumable upload: HTTP {resp.status_code} {resp.text[:300]}")
     location = resp.headers.get("Location")
