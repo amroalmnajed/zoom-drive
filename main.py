@@ -556,13 +556,23 @@ def _query_resume_offset(upload_uri: str) -> int:
     raise RuntimeError(f"Unexpected status querying resume offset: {resp.status_code}")
 
 
-def upload_recording(drive, zoom: ZoomClient, rec: Recording, folder: dict, session_num: int) -> Optional[dict]:
+def upload_recording(
+    drive,
+    zoom: ZoomClient,
+    rec: Recording,
+    folder: dict,
+    session_num: int,
+    bot: Optional["TelegramBot"] = None,
+) -> Optional[dict]:
     """
     Stream a Zoom recording directly into Google Drive using a pure-requests
     resumable upload.  This bypasses httplib2 entirely for the data transfer,
     which eliminates the RedirectMissingLocation crash caused by Drive sending
     HTTP 308 "Resume Incomplete" responses that httplib2 wrongly treats as
     broken redirects.
+
+    If bot is provided, a single Telegram message is sent at the start and then
+    edited in-place to show live upload progress.
     """
     course_code = folder.get("code", "Course")
     folder_id = folder["id"]
@@ -590,6 +600,58 @@ def upload_recording(drive, zoom: ZoomClient, rec: Recording, folder: dict, sess
     offset = 0
     failures = 0
     started = time.time()
+
+    # ── Telegram live progress tracking ────────────────────────────────────
+    # One message is sent, then edited in-place. Updates fire when:
+    #   • a new 10% boundary is crossed, OR
+    #   • at least 25 MB has been sent since the last update
+    _PROGRESS_INTERVAL_BYTES = 25 * 1024 * 1024  # 25 MB
+    _PROGRESS_INTERVAL_PCT   = 10                 # 10 %
+    progress_msg_id: Optional[int] = None
+    last_reported_pct: int = -1
+    last_reported_bytes: int = 0
+
+    def _send_progress(current_offset: int, final: bool = False, speed_bps: int = 0) -> None:
+        """Send or edit the Telegram progress message."""
+        nonlocal progress_msg_id
+        if not bot:
+            return
+        pct = int(current_offset / size * 100) if size else 0
+        bar_filled = pct // 5          # 0-20 blocks
+        bar = "█" * bar_filled + "░" * (20 - bar_filled)
+        if final:
+            elapsed = max(time.time() - started, 0.001)
+            spd = human_size(int(size / elapsed))
+            text = (
+                f"✅ <b>Upload complete!</b>\n"
+                f"<code>{name}</code>\n\n"
+                f"[{bar}] 100%\n"
+                f"{human_size(size)} in {elapsed:.0f}s — {spd}/s"
+            )
+        else:
+            text = (
+                f"📤 <b>Uploading…</b>\n"
+                f"<code>{name}</code>\n\n"
+                f"[{bar}] {pct}%\n"
+                f"{human_size(current_offset)} / {human_size(size)}"
+            )
+        if progress_msg_id:
+            bot.edit_message(progress_msg_id, text)
+        else:
+            progress_msg_id = bot.send_message(text)
+
+    def _maybe_update_progress(current_offset: int) -> None:
+        """Fire a progress update only if enough has changed."""
+        nonlocal last_reported_pct, last_reported_bytes
+        if not bot:
+            return
+        pct_now = int(current_offset / size * 100) if size else 0
+        pct_boundary = (pct_now // _PROGRESS_INTERVAL_PCT) * _PROGRESS_INTERVAL_PCT
+        bytes_since = current_offset - last_reported_bytes
+        if pct_boundary > last_reported_pct or bytes_since >= _PROGRESS_INTERVAL_BYTES:
+            last_reported_pct = pct_boundary
+            last_reported_bytes = current_offset
+            _send_progress(current_offset)
     zoom_resp: Optional[requests.Response] = None
 
     def _zoom_stream_at(start: int) -> requests.Response:
@@ -605,6 +667,7 @@ def upload_recording(drive, zoom: ZoomClient, rec: Recording, folder: dict, sess
 
     try:
         _zoom_stream_at(0)
+        _send_progress(0)   # send the initial "0%" progress message
 
         while offset < size:
             # Refresh token if it has expired
@@ -680,6 +743,7 @@ def upload_recording(drive, zoom: ZoomClient, rec: Recording, folder: dict, sess
                 print(f"\r  Uploading: 100.0%  ({human_size(size)} / {human_size(size)})", flush=True)
                 elapsed = max(time.time() - started, 0.001)
                 print(f"\n  + Uploaded {human_size(size)} in {elapsed:.0f}s ({human_size(int(size / elapsed))}/s)")
+                _send_progress(size, final=True)   # ← edit to ✅ complete
                 return data
 
             elif status_code == 308:
@@ -692,6 +756,7 @@ def upload_recording(drive, zoom: ZoomClient, rec: Recording, folder: dict, sess
                     offset += actual_chunk
                 pct = offset / size * 100
                 print(f"\r  Uploading: {pct:5.1f}%  ({human_size(offset)} / {human_size(size)})", end="", flush=True)
+                _maybe_update_progress(offset)     # ← throttled Telegram edit
 
             elif status_code in (500, 502, 503, 504):
                 failures += 1
@@ -731,7 +796,9 @@ def upload_recording(drive, zoom: ZoomClient, rec: Recording, folder: dict, sess
     # Should not reach here unless offset == size without a 200/201
     elapsed = max(time.time() - started, 0.001)
     print(f"\n  + Uploaded {human_size(size)} in {elapsed:.0f}s ({human_size(int(size / elapsed))}/s)")
+    _send_progress(size, final=True)
     return None
+
 
 
 
@@ -1069,15 +1136,36 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False) -> tuple[
 
             bot.send_message(f"🚀 <b>Starting Upload:</b> <code>{final_name}</code> to <b>{folder['name']}</b>...")
             try:
-                result = upload_recording(drive, zoom, rec, folder, session_num)
+                result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot)
                 state.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],
                            drive_file_id=(result or {}).get("id"))
                 uploaded += 1
                 bot.send_message(f"✅ <b>Uploaded successfully:</b> <code>{final_name}</code>")
             except Exception as exc:
                 failed += 1
-                log.error("Upload failed: %s", exc)
-                bot.send_message(f"❌ <b>Upload failed:</b> {exc}")
+                log.error("Upload failed for %s: %s", final_name, exc)
+                state.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
+
+                # ── Feature 2: Rich error alert ──────────────────────────
+                err_str = str(exc)
+                if "Zoom download" in err_str or "Zoom stream" in err_str:
+                    source = "📥 <b>Source:</b> Zoom download failed"
+                elif "Drive" in err_str or "resumable" in err_str.lower():
+                    source = "☁️ <b>Source:</b> Google Drive upload failed"
+                else:
+                    source = "⚙️ <b>Source:</b> Unexpected error"
+
+                now_str = datetime.now(ZoneInfo(config.LOCAL_TIMEZONE)).strftime("%Y-%m-%d %H:%M")
+                alert = (
+                    f"❌ <b>Upload Failed!</b>\n\n"
+                    f"📄 <b>File:</b> <code>{final_name}</code>\n"
+                    f"📁 <b>Folder:</b> {folder['name']}\n"
+                    f"🕐 <b>Time:</b> {now_str}\n"
+                    f"{source}\n\n"
+                    f"<b>Error:</b> <code>{err_str[:300]}</code>\n\n"
+                    f"ℹ️ Recording marked as <i>failed</i> — send /reset then /run to retry it."
+                )
+                bot.send_message(alert)
 
     except KeyboardInterrupt:
         bot.send_message("⚠️ <b>Run interrupted.</b>")
