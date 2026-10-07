@@ -1,0 +1,22 @@
+# Environment variables and secrets
+.env
+credentials.json
+token.json
+service_account.json
+
+# Local runtime state & logs
+processed.json
+*.log
+processed.tmp
+
+# Python build / venv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+
+# Windows / IDE
+.vscode/
+.idea/
+ZoomDriveBot.xml
