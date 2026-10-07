@@ -20,3 +20,5 @@ venv/
 .vscode/
 .idea/
 ZoomDriveBot.xml
+
+token_*.json

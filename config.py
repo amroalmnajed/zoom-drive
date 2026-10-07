@@ -115,8 +115,11 @@ def _write_env_json(env_key: str, file_path: Path):
         except Exception:
             pass
 
-_write_env_json("GOOGLE_TOKEN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
 _write_env_json("GOOGLE_CREDENTIALS_JSON", GOOGLE_OAUTH_CLIENT_FILE)
+# Still write the default one just in case
+_write_env_json("GOOGLE_TOKEN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
+
+
 
 # Full Drive scope is required to upload into folders that already exist.
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -135,29 +138,42 @@ FOLDERS: dict[str, dict] = {
         "code": "Main",
         "id": "1FG-D6YaW2I2VtWRGJl65Nz0OPu8HoRjb",
         "keywords": ["Main", "Combined Main"],
+        "token_env": "GOOGLE_TOKEN_MAIN_JSON",
+        "token_file": BASE_DIR / "token_main.json",
     },
     "2": {
         "name": "Combine Crash",
         "code": "Crash",
         "id": "1zSHOl52WfwWROnp1pq2O4aLpmFfx7Tv8",
         "keywords": ["Crash 1", "Combined Crash", "Combined Crash 1"],
+        "token_env": "GOOGLE_TOKEN_CRASH_JSON",
+        "token_file": BASE_DIR / "token_crash.json",
     },
     "3": {
         "name": "IGCSE",
         "code": "G10",
         "id": "1U0nJ4owRepRAf-hGjARDxWaHliLs4QA9",
         "keywords": ["Private G10", "G10"],
+        "token_env": "GOOGLE_TOKEN_G10_JSON",
+        "token_file": BASE_DIR / "token_g10.json",
     },
     "4": {
         "name": "Pre-igcse",
         "code": "G9",
         "id": "1DC7Qfj1vrR32AcLR3Qgc7NjTId4iJOkw",
         "keywords": ["Pre-IGCSE", "Pre", "pre", "pre-", "Pre-"],
+        "token_env": "GOOGLE_TOKEN_G9_JSON",
+        "token_file": BASE_DIR / "token_g9.json",
     },
 }
 
 # Folder suggested when NO keyword matches. Change to any key above.
 DEFAULT_FOLDER_KEY = "1"
+
+# Write folder-specific tokens from env variables
+for _f in FOLDERS.values():
+    if "token_env" in _f and "token_file" in _f:
+        _write_env_json(_f["token_env"], _f["token_file"])
 
 
 # --------------------------------------------------------------------------- #
