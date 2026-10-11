@@ -18,6 +18,8 @@ class TelegramBot:
         self.chat_id = str(chat_id)
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.offset = 0
+        self._deferred: list[dict] = []   # undo taps that arrived mid-run
+        self._queue: list[tuple] = []     # interpreted commands waiting to be returned
         self._flush_old_updates()
 
     def _flush_old_updates(self) -> None:
@@ -54,6 +56,15 @@ class TelegramBot:
             requests.post(f"{self.base_url}/answerCallbackQuery", json={"callback_query_id": callback_id, "text": text}, timeout=5)
         except Exception:
             pass
+
+    def _stash_stray(self, u: dict) -> None:
+        """An Undo tap that arrives while a run is waiting for something else."""
+        cb = u.get("callback_query")
+        if not cb or str(cb.get("from", {}).get("id")) != self.chat_id:
+            return
+        if str(cb.get("data", "")).startswith("undo"):
+            self._deferred.append(u)
+            self.answer_callback(cb["id"], "Got it - I'll handle this when the current run is done.")
 
     def get_user_decision(self, request: ApprovalRequest) -> ApprovalDecision:
         rec = request.recording
@@ -117,6 +128,7 @@ class TelegramBot:
                             chosen = folders[f_key]['name']
                             if msg_id: self.edit_message(msg_id, f"✅ <b>Approved for:</b> {chosen} | {rec.topic}")
                             return ApprovalDecision("upload", f_key)
+                        self._stash_stray(u)
             except Exception as exc:
                 log.warning("Telegram polling retry: %s", exc)
                 time.sleep(2)
@@ -160,6 +172,7 @@ class TelegramBot:
                             self.answer_callback(cb["id"], f"Session S{s_num} confirmed!")
                             if msg_id: self.edit_message(msg_id, f"🎯 <b>Confirmed Session:</b> S{s_num}")
                             return s_num
+                        self._stash_stray(u)
                     elif "message" in u:
                         msg = u["message"]
                         if str(msg.get("from", {}).get("id")) != self.chat_id:
@@ -175,26 +188,62 @@ class TelegramBot:
                 log.warning("Telegram polling retry: %s", exc)
                 time.sleep(2)
 
-    def listen_for_command(self) -> tuple[str, int]:
+    def _interpret(self, u: dict) -> Optional[tuple[str, object]]:
+        """Turn one Telegram update into (command, arg), or None to ignore it."""
+        cb = u.get("callback_query")
+        if cb:
+            if str(cb.get("from", {}).get("id")) != self.chat_id:
+                return None
+            data = str(cb.get("data", ""))
+            for prefix, cmd in (("undoyes:", "undo_yes"), ("undono:", "undo_no"), ("undo:", "undo_ask")):
+                if data.startswith(prefix):
+                    self.answer_callback(cb["id"])
+                    return cmd, data[len(prefix):]
+            return None
+
+        msg = u.get("message") or u.get("edited_message")
+        if not msg or str(msg.get("chat", {}).get("id")) != self.chat_id:
+            return None
+        text = (msg.get("text") or "").strip()
+        if not text.startswith("/"):
+            return None
+        parts = text.split()
+        cmd = parts[0].lstrip("/").split("@")[0].lower()
+
+        if cmd == "run":
+            days = config.LOOKBACK_DAYS
+            if len(parts) > 1 and parts[1].isdigit():
+                days = int(parts[1])
+            self.send_message(f"▶️ <b>Starting run</b> — looking back <b>{days} day(s)</b>...")
+            return "run", days
+        if cmd in ("status", "reset", "help"):
+            return cmd, 0
+        if cmd == "undo":
+            return "undo_list", ""
+        self.send_message(
+            f"❓ Unknown command <code>{cmd}</code>.\n"
+            "Try /run, /run 30, /undo, /status, /reset, or /help."
+        )
+        return None
+
+    def listen_for_command(self) -> tuple[str, object]:
         """
-        Block until the authorised user sends a recognised command.
+        Block until the authorised user sends a recognised command or taps an
+        Undo button.  Returns (command, arg):
 
-        Recognised commands
-        -------------------
-        /run [N]   – fetch & process recordings from the last N days (default 7)
-        /status    – show how many recordings are in processed.json
-        /reset     – clear processed.json so all recordings are offered again
-        /help      – show the command list
-
-        Returns (command, days) where command is one of:
-            "run", "status", "reset", "help"
-        and days is meaningful only for "run".
+            ("run", days)            /run [N]
+            ("status" | "reset" | "help", 0)
+            ("undo_list", "")        /undo          -> list recent uploads
+            ("undo_ask", id)         tapped "Undo this upload" -> ask to confirm
+            ("undo_yes", id)         confirmed
+            ("undo_no", id)          cancelled
         """
         self.send_message(
             "🤖 <b>Bot is idle and listening.</b>\n\n"
             "Send a command to get started:\n"
             "• /run — fetch last 7 days\n"
             "• /run 30 — fetch last 30 days\n"
+            "• /undo — undo a recent upload + docx link\n"
             "• /status — show processed recordings\n"
             "• /reset — clear processed history\n"
             "• /help — show this message"
@@ -202,6 +251,12 @@ class TelegramBot:
         log.debug("Bot idle — waiting for /run command on Telegram.")
 
         while True:
+            while self._deferred:                      # taps that came in mid-run
+                result = self._interpret(self._deferred.pop(0))
+                if result:
+                    self._queue.append(result)
+            if self._queue:
+                return self._queue.pop(0)
             try:
                 resp = requests.get(
                     f"{self.base_url}/getUpdates",
@@ -213,42 +268,9 @@ class TelegramBot:
                     continue
                 for u in resp.json().get("result", []):
                     self.offset = u["update_id"] + 1
-                    msg = u.get("message") or u.get("edited_message")
-                    if not msg:
-                        continue
-                    # Only accept messages from the authorised chat
-                    if str(msg.get("chat", {}).get("id")) != self.chat_id:
-                        continue
-                    text = (msg.get("text") or "").strip()
-                    if not text.startswith("/"):
-                        continue
-
-                    parts = text.split()
-                    cmd = parts[0].lstrip("/").split("@")[0].lower()
-
-                    if cmd == "run":
-                        days = config.LOOKBACK_DAYS
-                        if len(parts) > 1 and parts[1].isdigit():
-                            days = int(parts[1])
-                        self.send_message(f"▶️ <b>Starting run</b> — looking back <b>{days} day(s)</b>...")
-                        return "run", days
-
-                    elif cmd == "status":
-                        return "status", 0
-
-                    elif cmd == "reset":
-                        return "reset", 0
-
-                    elif cmd == "help":
-                        return "help", 0
-
-                    else:
-                        self.send_message(
-                            f"❓ Unknown command <code>{cmd}</code>.\n"
-                            "Try /run, /run 30, /status, /reset, or /help."
-                        )
+                    result = self._interpret(u)
+                    if result:
+                        self._queue.append(result)   # never drop the rest of a batch
             except Exception as exc:
                 log.warning("Bot idle poll error: %s", exc)
                 time.sleep(2)
-
-

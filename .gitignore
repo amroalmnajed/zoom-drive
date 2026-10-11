@@ -6,6 +6,7 @@ service_account.json
 
 # Local runtime state & logs
 processed.json
+undo_history.json
 *.log
 processed.tmp
 

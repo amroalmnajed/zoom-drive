@@ -195,6 +195,11 @@ HTTP_TIMEOUT_SECONDS = 120
 REMEMBER_SKIPPED = True
 
 STATE_FILE = BASE_DIR / "processed.json"
+UNDO_FILE = BASE_DIR / "undo_history.json"
+
+# /undo moves the uploaded video to the Drive Bin (recoverable for 30 days).
+# Set UNDO_DELETE_PERMANENTLY=1 to delete it for good and free the space at once.
+UNDO_DELETE_PERMANENTLY = os.getenv("UNDO_DELETE_PERMANENTLY", "0") == "1"
 LOG_FILE = BASE_DIR / "zoom_to_drive.log"
 
 

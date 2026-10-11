@@ -99,6 +99,17 @@ def drive_file_exists(drive, folder_id: str, name: str) -> Optional[str]:
     files = result.get("files", [])
     return files[0]["id"] if files else None
 
+def find_file(drive, folder_id: str, name: str) -> Optional[dict]:
+    """Like drive_file_exists but returns id, name and webViewLink."""
+    safe = name.replace("\\", "\\\\").replace("'", "\\'")
+    query = f"name = '{safe}' and '{folder_id}' in parents and trashed = false"
+    result = drive.files().list(
+        q=query, fields="files(id,name,webViewLink)", pageSize=1,
+        supportsAllDrives=True, includeItemsFromAllDrives=True,
+    ).execute(num_retries=3)
+    files = result.get("files", [])
+    return files[0] if files else None
+
 def get_next_session_number(drive, folder_id: str) -> int:
     if not drive:
         return 1
@@ -282,10 +293,12 @@ def upload_recording(
     folder_id = folder["id"]
     name = build_drive_filename(rec, course_code, session_num)
 
-    existing_id = drive_file_exists(drive, folder_id, name)
-    if existing_id:
+    existing = find_file(drive, folder_id, name)
+    if existing:
         print(f"  = Already in Drive folder as {name!r}; not uploading again.")
-        return None
+        # Hand the existing file back (flagged) so the docx link can still be
+        # added, e.g. when a previous run uploaded fine but the docx step failed.
+        return {**existing, "existing": True}
 
     size = rec.file_size or zoom.get_content_length(rec.download_url)
     if size <= 0:
