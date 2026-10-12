@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for zoom-drive
 # Stage 1: Build stage (if needed for future dependencies)
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
@@ -21,6 +21,7 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python dependencies from builder stage
@@ -29,7 +30,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 
 # Copy application code
 COPY *.py ./
-COPY .env.example .env
+COPY env.example .env
+COPY tests/ ./tests/
 
 # Create directory for state files
 RUN mkdir -p /app/data
@@ -38,8 +40,8 @@ RUN mkdir -p /app/data
 ENV PYTHONUNBUFFERED=1
 ENV HEALTH_PORT=8080
 
-# Expose health check port
-EXPOSE 8080
+# Expose health check and webhook ports
+EXPOSE 8080 8443
 
 # Run the bot
 CMD ["python", "main.py", "--bot"]
