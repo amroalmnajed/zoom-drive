@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 import httplib2
 import requests
@@ -89,6 +90,42 @@ def preflight_check_folders(drive) -> None:
                 print(f"  ! Folder {key} ({folder['name']}): ID is not a live folder.")
         except HttpError as exc:
             print(f"  ! Folder {key} ({folder['name']}): cannot access it (HTTP {exc.resp.status}).")
+
+def create_folder_if_missing(drive, parent_id: str, folder_name: str) -> str:
+    """Create a folder in Drive if it doesn't exist.
+    
+    Args:
+        drive: Drive service instance
+        parent_id: Parent folder ID
+        folder_name: Name of the folder to create
+    
+    Returns:
+        Folder ID (existing or newly created)
+    """
+    # Check if folder already exists
+    existing = drive_file_exists(drive, parent_id, folder_name)
+    if existing:
+        log.info("Folder %s already exists in parent %s", folder_name, parent_id)
+        return existing
+    
+    # Create the folder
+    folder_metadata = {
+        "name": folder_name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    
+    try:
+        result = drive.files().create(
+            body=folder_metadata,
+            fields="id",
+            supportsAllDrives=True
+        ).execute(num_retries=3)
+        log.info("Created folder %s with ID %s", folder_name, result.get("id"))
+        return result.get("id")
+    except HttpError as exc:
+        log.error("Failed to create folder %s: %s", folder_name, exc)
+        raise
 
 def drive_file_exists(drive, folder_id: str, name: str) -> Optional[str]:
     safe = name.replace("\\", "\\\\").replace("'", "\\'")
@@ -199,7 +236,7 @@ def _is_retryable_http_error(exc: HttpError) -> bool:
         return b"rateLimitExceeded" in content or b"userRateLimitExceeded" in content
     return False
 
-def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, description: str) -> str:
+def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, description: str, token_path: Path) -> str:
     """
     Start a Google Drive resumable upload session and return the upload URI.
     Uses the requests library directly to avoid httplib2's 308-as-redirect bug.
@@ -207,12 +244,12 @@ def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, desc
     # Proactively refresh if we already know it's expired
     if not creds.valid and creds.refresh_token:
         creds.refresh(GoogleAuthRequest())
-        config.GOOGLE_OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        token_path.write_text(creds.to_json(), encoding="utf-8")
 
     token = creds.token
     if not token:
         creds.refresh(GoogleAuthRequest())
-        config.GOOGLE_OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        token_path.write_text(creds.to_json(), encoding="utf-8")
         token = creds.token
 
     headers = {
@@ -242,7 +279,7 @@ def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, desc
     if resp.status_code == 401 and creds.refresh_token:
         log.warning("Drive returned HTTP 401. Forcing a token refresh and retrying...")
         creds.refresh(GoogleAuthRequest())
-        config.GOOGLE_OAUTH_TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+        token_path.write_text(creds.to_json(), encoding="utf-8")
         headers["Authorization"] = f"Bearer {creds.token}"
         resp = do_post()
 
@@ -308,9 +345,10 @@ def upload_recording(
 
     # We need the raw OAuth credentials object to generate bearer tokens.
     creds = _load_google_credentials(folder)
+    token_path = folder["token_file"] if folder and "token_file" in folder else config.GOOGLE_OAUTH_TOKEN_FILE
 
     # ── Initiate resumable upload session ──────────────────────────────────
-    upload_uri = _initiate_resumable_upload(creds, folder_id, name, size, description)
+    upload_uri = _initiate_resumable_upload(creds, folder_id, name, size, description, token_path)
     log.debug("Resumable upload URI obtained for %s", name)
 
     chunk_size = config.UPLOAD_CHUNK_SIZE

@@ -6,5 +6,7 @@ google-auth-httplib2>=0.2
 httplib2>=0.22
 python-dotenv>=1.0
 tzdata>=2024.1
+flask>=3.0
+ffmpeg-python>=0.2.0
 
 python-docx>=1.2.0

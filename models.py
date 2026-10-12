@@ -19,6 +19,10 @@ class Recording:
     file_size: Optional[int]
     download_url: str
     recording_type: str
+    participants: Optional[list[str]] = None
+    resolution: Optional[str] = None
+    bitrate: Optional[str] = None
+    thumbnail_url: Optional[str] = None
 
     @property
     def key(self) -> str:
@@ -41,5 +45,12 @@ class ApprovalRequest:
 @dataclass
 class ApprovalDecision:
     action: Literal["upload", "skip", "quit"]
+    folder_key: Optional[str] = None
+
+@dataclass
+class BatchRequest:
+    recordings: list[Recording]
+    selected_keys: set[str]
+    action: Optional[Literal["upload", "skip"]] = None
     folder_key: Optional[str] = None
 

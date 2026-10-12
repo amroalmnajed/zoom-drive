@@ -1,0 +1,88 @@
+# ==========================================
+# Antigravity CLI (.agyignore)
+# Token-Saver & Context Optimization
+# ==========================================
+
+# 1. Dependency Directories & Package Managers
+node_modules/
+bower_components/
+vendor/
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.pyc
+
+# 2. Build Outputs & Compiled Binaries
+build/
+dist/
+out/
+target/
+bin/
+obj/
+*.class
+*.jar
+*.war
+*.ear
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+
+# 3. Package Lockfiles (High token bloat)
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+Cargo.lock
+Gemfile.lock
+poetry.lock
+
+# 4. Version Control & Metadata
+.git/
+.svn/
+.hg/
+.gitignore
+.gitattributes
+
+# 5. IDE, Editor & OS Configuration Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.circ.bak
+
+# 6. Logs, Databases & Media Artifacts
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+*.csv
+*.tsv
+*.pdf
+*.zip
+*.tar.gz
+*.7z
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.mp3
+
+# 7. Test Coverage, Caches & Temporary Outputs
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.gradle/
+.matrix/
+tmp/
+temp/

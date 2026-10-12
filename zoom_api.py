@@ -7,13 +7,39 @@ import config
 from models import ZoomError, Recording
 from utils import backoff_sleep, parse_zoom_time
 
+class RateLimiter:
+    """Simple token bucket rate limiter for API calls."""
+    
+    def __init__(self, calls_per_second: float = 10):
+        """Initialize rate limiter.
+        
+        Args:
+            calls_per_second: Maximum API calls per second
+        """
+        self.min_interval = 1.0 / calls_per_second
+        self.last_call = 0.0
+    
+    def wait(self) -> None:
+        """Wait if necessary to respect rate limit."""
+        now = time.time()
+        elapsed = now - self.last_call
+        if elapsed < self.min_interval:
+            sleep_time = self.min_interval - elapsed
+            time.sleep(sleep_time)
+        self.last_call = time.time()
+
 class ZoomClient:
+    """Client for Zoom Server-to-Server OAuth API."""
+
     def __init__(self) -> None:
+        """Initialize Zoom API client."""
         self._session = requests.Session()
         self._token: Optional[str] = None
         self._expires_at: float = 0.0
+        self._rate_limiter = RateLimiter(calls_per_second=10)  # Zoom allows ~10 calls/sec
 
     def _fetch_token(self) -> None:
+        """Fetch OAuth token from Zoom API with retry logic."""
         for attempt in range(1, config.MAX_RETRIES + 1):
             try:
                 resp = self._session.post(
@@ -41,6 +67,11 @@ class ZoomClient:
             raise ZoomError(f"Zoom rejected credentials (HTTP {resp.status_code}): {resp.text[:300]}.")
 
     def _get_token(self) -> str:
+        """Get valid OAuth token, refreshing if expired or near expiry.
+
+        Returns:
+            Valid OAuth access token
+        """
         if not self._token or time.time() >= self._expires_at - 300:
             self._fetch_token()
         assert self._token is not None
@@ -49,6 +80,21 @@ class ZoomClient:
     def _request(
         self, method: str, url: str, *, params: Optional[dict] = None, headers: Optional[dict] = None, stream: bool = False
     ) -> requests.Response:
+        """Make authenticated HTTP request to Zoom API with retry logic.
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            url: Request URL
+            params: Query parameters
+            headers: Additional headers
+            stream: Whether to stream response
+
+        Returns:
+            Response object
+        """
+        # Apply rate limiting before making the request
+        self._rate_limiter.wait()
+        
         attempt = 0
         refreshed_after_401 = False
         while True:
@@ -86,22 +132,31 @@ class ZoomClient:
             resp.close()
             raise ZoomError(f"Zoom API error HTTP {resp.status_code} for {url}: {body}")
 
-    def iter_recordings(self, days_back: int) -> Iterator[Recording]:
+    def iter_recordings(self, days_back: int, fetch_participants: bool = False) -> Iterator[Recording]:
+        """Iterate over recordings from the last N days.
+
+        Args:
+            days_back: Number of days to look back
+            fetch_participants: Whether to fetch participant data
+
+        Yields:
+            Recording objects
+        """
         today = datetime.now(timezone.utc).date()
         window_start = today - timedelta(days=days_back)
         seen: set[str] = set()
         while window_start <= today:
             window_end = min(window_start + timedelta(days=29), today)
-            yield from self._iter_window(window_start.isoformat(), window_end.isoformat(), seen)
+            yield from self._iter_window(window_start.isoformat(), window_end.isoformat(), seen, fetch_participants=fetch_participants)
             window_start = window_end + timedelta(days=1)
 
-    def _iter_window(self, date_from: str, date_to: str, seen: set[str]) -> Iterator[Recording]:
+    def _iter_window(self, date_from: str, date_to: str, seen: set[str], fetch_participants: bool = False) -> Iterator[Recording]:
         url = f"{config.ZOOM_API_BASE}/users/{quote(config.ZOOM_USER_ID, safe='@')}/recordings"
         params: dict = {"from": date_from, "to": date_to, "page_size": 300}
         while True:
             data = self._request("GET", url, params=params).json()
             for meeting in data.get("meetings") or []:
-                rec = self._meeting_to_recording(meeting)
+                rec = self._meeting_to_recording(meeting, fetch_participants=fetch_participants)
                 if rec and rec.key not in seen:
                     seen.add(rec.key)
                     yield rec
@@ -110,10 +165,10 @@ class ZoomClient:
                 return
             params["next_page_token"] = token
 
-    @staticmethod
-    def _meeting_to_recording(meeting: dict) -> Optional[Recording]:
+    def _meeting_to_recording(self, meeting: dict, fetch_participants: bool = False) -> Optional[Recording]:
         topic = (meeting.get("topic") or "").strip() or "Untitled Meeting"
         meeting_id = str(meeting.get("id") or "unknown")
+        meeting_uuid = str(meeting.get("uuid") or "")
 
         files = [
             f for f in (meeting.get("recording_files") or [])
@@ -140,9 +195,14 @@ class ZoomClient:
         elif meeting.get("duration"):
             duration = float(meeting["duration"])
 
+        # Fetch participants if requested
+        participants = None
+        if fetch_participants and meeting_uuid:
+            participants = self.get_meeting_participants(meeting_uuid)
+
         return Recording(
             meeting_id=meeting_id,
-            meeting_uuid=str(meeting.get("uuid") or ""),
+            meeting_uuid=meeting_uuid,
             topic=topic,
             host_email=(meeting.get("host_email") or "unknown host"),
             start_time=parse_zoom_time(meeting.get("start_time")) or rec_start,
@@ -151,9 +211,22 @@ class ZoomClient:
             file_size=int(primary["file_size"]) if primary.get("file_size") else None,
             download_url=primary["download_url"],
             recording_type=str(primary.get("recording_type") or "video"),
+            participants=participants,
         )
 
     def open_download(self, url: str, start: int = 0) -> requests.Response:
+        """Open a streaming download connection for a recording.
+
+        Args:
+            url: Recording download URL
+            start: Byte offset to resume from (for resumable downloads)
+
+        Returns:
+            Streaming response object
+
+        Raises:
+            ZoomError: If download fails or Range request not honored
+        """
         token = self._get_token()
         sep = "&" if "?" in url else "?"
         download_url = f"{url}{sep}access_token={token}"
@@ -174,6 +247,17 @@ class ZoomClient:
         return resp
 
     def get_content_length(self, url: str) -> int:
+        """Get the content length of a recording.
+
+        Args:
+            url: Recording download URL
+
+        Returns:
+            Content length in bytes
+
+        Raises:
+            ZoomError: If content length cannot be determined
+        """
         resp = self.open_download(url)
         try:
             length = resp.headers.get("Content-Length")
@@ -182,4 +266,27 @@ class ZoomClient:
         if not length:
             raise ZoomError("Cannot determine recording size.")
         return int(length)
+
+    def get_meeting_participants(self, meeting_uuid: str) -> list[str]:
+        """Get list of participant emails for a meeting.
+
+        Args:
+            meeting_uuid: Meeting UUID
+
+        Returns:
+            List of participant email addresses
+        """
+        try:
+            url = f"{config.ZOOM_API_BASE}/past_meetings/{meeting_uuid}/participants"
+            data = self._request("GET", url).json()
+            participants = []
+            for p in data.get("participants", []):
+                email = p.get("email") or p.get("name")
+                if email:
+                    participants.append(str(email))
+            return participants
+        except Exception as exc:
+            # Participant data may not be available for all meetings
+            # Return empty list instead of failing
+            return []
 

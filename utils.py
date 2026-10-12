@@ -4,6 +4,7 @@ import re
 import sys
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
 import config
 from models import Recording
@@ -11,17 +12,43 @@ from models import Recording
 log = logging.getLogger("zoom_to_drive")
 
 def setup_logging() -> None:
-    log.setLevel(logging.DEBUG)
+    """Configure logging with console and rotating file handlers.
+
+    Log level is controlled by LOG_LEVEL environment variable (default: INFO).
+    """
+    # Get log level from config, default to INFO
+    log_level_str = getattr(config, 'LOG_LEVEL', 'INFO')
+    log_level = getattr(logging, log_level_str.upper(), logging.INFO)
+
+    log.setLevel(log_level)
     fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S")
+
+    # Console handler - use the configured log level
     console = logging.StreamHandler(sys.stderr)
-    console.setLevel(logging.INFO)
+    console.setLevel(log_level)
     console.setFormatter(fmt)
-    file_handler = logging.FileHandler(config.LOG_FILE, encoding="utf-8")
+
+    # Use RotatingFileHandler to prevent log file from growing indefinitely
+    # Keep 10 files of 10MB each (100MB total)
+    # File handler always logs at DEBUG level for troubleshooting
+    file_handler = RotatingFileHandler(
+        config.LOG_FILE,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=10,
+        encoding="utf-8"
+    )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(fmt)
+
     log.addHandler(console)
     log.addHandler(file_handler)
 def backoff_sleep(attempt: int, retry_after: Optional[float] = None) -> None:
+    """Sleep with exponential backoff for retry attempts.
+
+    Args:
+        attempt: Current retry attempt number (1-indexed)
+        retry_after: Optional Retry-After header value in seconds
+    """
     if retry_after and retry_after > 0:
         delay = min(retry_after, 300)
     else:
@@ -31,6 +58,14 @@ def backoff_sleep(attempt: int, retry_after: Optional[float] = None) -> None:
     time.sleep(delay)
 
 def human_size(num_bytes: Optional[int]) -> str:
+    """Convert byte count to human-readable string.
+
+    Args:
+        num_bytes: Number of bytes to convert
+
+    Returns:
+        Human-readable string (e.g., "1.5 MB", "500 B")
+    """
     if not num_bytes:
         return "unknown size"
     size = float(num_bytes)
@@ -41,6 +76,14 @@ def human_size(num_bytes: Optional[int]) -> str:
     return f"{size:.1f} TB"
 
 def human_duration(minutes: Optional[float]) -> str:
+    """Convert minutes to human-readable duration string.
+
+    Args:
+        minutes: Duration in minutes
+
+    Returns:
+        Human-readable string (e.g., "1h 30m", "45m")
+    """
     if minutes is None:
         return "unknown"
     total = int(round(minutes))
@@ -48,6 +91,14 @@ def human_duration(minutes: Optional[float]) -> str:
     return f"{hours}h {mins:02d}m" if hours else f"{mins}m"
 
 def parse_zoom_time(value: Optional[str]) -> Optional[datetime]:
+    """Parse Zoom API timestamp string to datetime object.
+
+    Args:
+        value: ISO 8601 timestamp string (may end with 'Z')
+
+    Returns:
+        Parsed datetime with UTC timezone, or None if parsing fails
+    """
     if not value:
         return None
     try:
@@ -74,13 +125,120 @@ def _build_rules() -> list[tuple[str, str, re.Pattern]]:
 _RULES = _build_rules()
 
 def categorize(title: str) -> tuple[str, Optional[str]]:
+    """Categorize a recording title to a folder key based on keyword matching.
+
+    Args:
+        title: Recording topic/title to categorize
+
+    Returns:
+        Tuple of (folder_key, matched_keyword) or (DEFAULT_FOLDER_KEY, None)
+    """
     for key, kw, pattern in _RULES:
         if pattern.search(title):
             return key, kw
     return config.DEFAULT_FOLDER_KEY, None
 def build_drive_filename(rec: Recording, course_code: str, session_num: int) -> str:
+    """Build standardized filename for Drive upload.
+
+    Args:
+        rec: Recording object with metadata
+        course_code: Course code (e.g., "Main", "Crash", "G10")
+        session_num: Session number
+
+    Returns:
+        Filename in format: GMTYYYYMMDD_COURSE_S##.mp4
+    """
     if rec.start_time:
         date_str = rec.start_time.astimezone(timezone.utc).strftime("%Y%m%d")
     else:
         date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     return f"GMT{date_str}_{course_code}_S{session_num}.mp4"
+
+
+def extract_video_metadata(video_url: str) -> tuple[Optional[str], Optional[str]]:
+    """Extract video resolution and bitrate using FFmpeg.
+
+    Args:
+        video_url: URL of the video file
+
+    Returns:
+        Tuple of (resolution, bitrate) or (None, None) if extraction fails
+    """
+    try:
+        import subprocess
+        import json
+
+        # Use ffprobe to get video metadata without downloading the entire file
+        cmd = [
+            "ffprobe",
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,bit_rate",
+            "-of", "json",
+            video_url
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            log.debug("FFprobe failed: %s", result.stderr)
+            return None, None
+
+        data = json.loads(result.stdout)
+        streams = data.get("streams", [])
+        if not streams:
+            return None, None
+
+        stream = streams[0]
+        width = stream.get("width")
+        height = stream.get("height")
+        bit_rate = stream.get("bit_rate")
+
+        resolution = f"{width}x{height}" if width and height else None
+        bitrate = f"{int(bit_rate) / 1000:.0f} kbps" if bit_rate else None
+
+        return resolution, bitrate
+    except FileNotFoundError:
+        log.debug("FFprobe not found, skipping video metadata extraction")
+        return None, None
+    except Exception as exc:
+        log.debug("Failed to extract video metadata: %s", exc)
+        return None, None
+
+
+def generate_thumbnail(video_url: str, time_offset: float = 2.0) -> Optional[bytes]:
+    """Generate a thumbnail from video using FFmpeg.
+
+    Args:
+        video_url: URL of the video file
+        time_offset: Time offset in seconds to capture frame (default: 2.0)
+
+    Returns:
+        Thumbnail image as bytes, or None if generation fails
+    """
+    try:
+        import subprocess
+
+        # Use ffmpeg to extract a single frame at the specified time offset
+        cmd = [
+            "ffmpeg",
+            "-ss", str(time_offset),
+            "-i", video_url,
+            "-vframes", "1",
+            "-q:v", "2",
+            "-vf", "scale=320:240",
+            "-f", "image2pipe",
+            "-"
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        if result.returncode != 0:
+            log.debug("FFmpeg thumbnail generation failed: %s", result.stderr.decode())
+            return None
+
+        return result.stdout
+    except FileNotFoundError:
+        log.debug("FFmpeg not found, skipping thumbnail generation")
+        return None
+    except Exception as exc:
+        log.debug("Failed to generate thumbnail: %s", exc)
+        return None

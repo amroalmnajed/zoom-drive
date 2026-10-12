@@ -45,6 +45,11 @@ ZOOM_API_BASE = "https://api.zoom.us/v2"
 # 30-day window per request; the script splits longer ranges automatically.
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
 
+# Scheduled run configuration (cron-like)
+# Format: "H:M" for daily runs at specific time (e.g., "02:00" for 2 AM)
+# Set to empty string to disable scheduled runs
+SCHEDULED_RUN_TIME = os.getenv("SCHEDULED_RUN_TIME", "")
+
 # Timezone used when DISPLAYING start times and building Drive file names.
 LOCAL_TIMEZONE = os.getenv("LOCAL_TIMEZONE", "Africa/Cairo")
 
@@ -202,6 +207,50 @@ UNDO_FILE = BASE_DIR / "undo_history.json"
 UNDO_DELETE_PERMANENTLY = os.getenv("UNDO_DELETE_PERMANENTLY", "0") == "1"
 LOG_FILE = BASE_DIR / "zoom_to_drive.log"
 
+# Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# Recording size filters (in MB)
+# Set MIN_RECORDING_SIZE_MB to skip recordings smaller than this size
+# Set MAX_RECORDING_SIZE_MB to skip recordings larger than this size
+# Set to 0 or empty to disable the filter
+MIN_RECORDING_SIZE_MB = int(os.getenv("MIN_RECORDING_SIZE_MB", "0"))
+MAX_RECORDING_SIZE_MB = int(os.getenv("MAX_RECORDING_SIZE_MB", "0"))
+
+# Recording metadata extraction
+# Set to True to enable participant data fetching from Zoom API
+FETCH_PARTICIPANTS = os.getenv("FETCH_PARTICIPANTS", "true").lower() == "true"
+
+# Set to True to enable video metadata extraction (resolution, bitrate) using FFmpeg
+# Requires FFmpeg binary to be installed on the system
+ENABLE_VIDEO_METADATA = os.getenv("ENABLE_VIDEO_METADATA", "true").lower() == "true"
+
+# Set to True to enable thumbnail generation from recordings using FFmpeg
+# Requires FFmpeg binary to be installed on the system
+ENABLE_THUMBNAILS = os.getenv("ENABLE_THUMBNAILS", "true").lower() == "true"
+
+# Time offset in seconds to capture thumbnail frame (default: 2.0)
+THUMBNAIL_TIME_OFFSET = float(os.getenv("THUMBNAIL_TIME_OFFSET", "2.0"))
+
+# Batch mode settings
+# Maximum number of recordings to display in batch selection
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "10"))
+
+# Telegram webhook settings
+# Set to True to use webhooks instead of polling (requires public HTTPS endpoint)
+TELEGRAM_USE_WEBHOOK = os.getenv("TELEGRAM_USE_WEBHOOK", "false").lower() == "true"
+
+# Webhook URL (required if webhook enabled)
+# Format: https://your-domain.com/webhook/<bot_token>
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
+
+# Optional secret token for webhook security validation
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+
+# Webhook server configuration
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "0.0.0.0")
+
 
 # --------------------------------------------------------------------------- #
 # Validation
@@ -236,6 +285,42 @@ def validate_config(need_google: bool = True) -> None:
                 problems.append(f"Service account key not found: {GOOGLE_SERVICE_ACCOUNT_FILE}")
         else:
             problems.append("GOOGLE_AUTH_MODE must be 'oauth' or 'service_account'.")
+
+    # Check for keyword conflicts
+    keyword_map: dict[str, str] = {}
+    for key, folder in FOLDERS.items():
+        for kw in folder.get("keywords", []):
+            kw_lower = kw.strip().lower()
+            if kw_lower in keyword_map and keyword_map[kw_lower] != key:
+                problems.append(
+                    f"Keyword conflict: '{kw}' is used in both folder '{keyword_map[kw_lower]}' and '{key}'."
+                )
+            keyword_map[kw_lower] = key
+
+    # Validate timezone
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(LOCAL_TIMEZONE)
+    except Exception:
+        problems.append(f"Invalid LOCAL_TIMEZONE: {LOCAL_TIMEZONE}")
+
+    # Validate size filters
+    if MIN_RECORDING_SIZE_MB < 0:
+        problems.append("MIN_RECORDING_SIZE_MB must be >= 0.")
+    if MAX_RECORDING_SIZE_MB < 0:
+        problems.append("MAX_RECORDING_SIZE_MB must be >= 0.")
+    if MIN_RECORDING_SIZE_MB > 0 and MAX_RECORDING_SIZE_MB > 0 and MIN_RECORDING_SIZE_MB > MAX_RECORDING_SIZE_MB:
+        problems.append("MIN_RECORDING_SIZE_MB cannot be greater than MAX_RECORDING_SIZE_MB.")
+
+    # Validate webhook configuration
+    if TELEGRAM_USE_WEBHOOK and not TELEGRAM_WEBHOOK_URL:
+        problems.append("TELEGRAM_USE_WEBHOOK is True but TELEGRAM_WEBHOOK_URL is not set.")
+    if WEBHOOK_PORT not in (80, 88, 443, 8443):
+        problems.append("WEBHOOK_PORT must be one of: 80, 88, 443, 8443 (Telegram requirement).")
+    if MAX_BATCH_SIZE < 1:
+        problems.append("MAX_BATCH_SIZE must be >= 1.")
+    if THUMBNAIL_TIME_OFFSET < 0:
+        problems.append("THUMBNAIL_TIME_OFFSET must be >= 0.")
 
     if problems:
         raise ValueError("Configuration problems:\n  - " + "\n  - ".join(problems))

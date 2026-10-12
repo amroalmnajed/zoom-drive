@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+
+# Virtual environments
+venv
+env
+ENV
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs (will be mounted as volume)
+*.log
+
+# State files (will be mounted as volume)
+processed.json
+undo_history.json
+
+# Credentials (will be mounted as volume)
+credentials.json
+token*.json
+service_account.json
+
+# Tests
+tests/
+*.pyc
+
+# Documentation
+*.md
+!README.md
+
+# Plans
+.windsurf
+.devin

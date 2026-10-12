@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  zoom-drive:
+    build: .
+    container_name: zoom-drive-bot
+    restart: unless-stopped
+    
+    # Environment variables - load from .env file or set here
+    env_file:
+      - .env
+    
+    # Environment variables (override .env if needed)
+    environment:
+      - PYTHONUNBUFFERED=1
+      - HEALTH_PORT=8080
+    
+    # Volume mounts for state persistence
+    volumes:
+      - ./data:/app/data
+      - ./processed.json:/app/processed.json
+      - ./undo_history.json:/app/undo_history.json
+      - ./zoom_to_drive.log:/app/zoom_to_drive.log
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token*.json:/app/token*.json:ro
+      - ./service_account.json:/app/service_account.json:ro
+    
+    # Port mapping for health check and webhook
+    ports:
+      - "8080:8080"
+      - "8443:8443"  # Webhook port (Telegram requires HTTPS on 443, 80, 88, or 8443)
+    
+    # Resource limits (adjust based on your needs)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

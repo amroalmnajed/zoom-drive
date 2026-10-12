@@ -8,26 +8,51 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import signal
 import sys
 import time
+import requests
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import httplib2
+# WORKAROUND: httplib2 incorrectly treats HTTP 308 "Resume Incomplete" responses as redirects.
+# Google Drive's resumable upload API uses 308 to indicate "more data needed", but httplib2
+# tries to follow it as a redirect, causing "RedirectMissingLocation" errors.
+# By removing 308 from REDIRECT_CODES, we prevent httplib2 from treating it as a redirect.
+# This is a known issue with httplib2; the proper fix would be to switch to a different HTTP library
+# or use the requests-based upload implementation (which we already do for the actual data transfer).
 httplib2.REDIRECT_CODES = {301, 302, 303, 307}
 
 import config
-from models import ZoomError, ApprovalRequest
-from utils import setup_logging, categorize, build_drive_filename
+from models import ZoomError, ApprovalRequest, BatchRequest
+from utils import setup_logging, categorize, build_drive_filename, extract_video_metadata, generate_thumbnail
+
+# Flask app for webhook mode (lazy import to avoid issues if not needed)
+_flask_app = None
 from state import StateStore
 from undo_store import UndoStore
 from zoom_api import ZoomClient
 from drive_api import get_drive_service, get_next_session_number, upload_recording
 from googleapiclient.errors import HttpError
 from telegram_bot import TelegramBot
+from error_handler import format_error_notification, log_error_with_traceback
 
 log = logging.getLogger("zoom_to_drive")
+
+# Global flag for graceful shutdown
+_shutdown_requested = False
+_current_upload_in_progress = False
+_webhook_app = None
+_flask_thread = None
+
+def _request_shutdown(signum=None, frame=None) -> None:
+    """Signal handler for graceful shutdown."""
+    global _shutdown_requested
+    _shutdown_requested = True
+    log.info("Shutdown signal received (%s), gracefully stopping...", signum)
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Zoom cloud recordings -> Google Drive (via Telegram approval).")
@@ -37,10 +62,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--bot", action="store_true",
         help="run as a persistent Telegram bot — trigger runs with /run [N] from chat"
     )
+    parser.add_argument("--filter-topic", type=str, help="filter recordings by topic keyword")
+    parser.add_argument("--filter-from", type=str, help="filter recordings from date (YYYY-MM-DD)")
+    parser.add_argument("--filter-to", type=str, help="filter recordings to date (YYYY-MM-DD)")
+    parser.add_argument("--min-size", type=int, help="minimum recording size in MB")
+    parser.add_argument("--max-size", type=int, help="maximum recording size in MB")
     return parser.parse_args(argv)
 
 
-def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False) -> tuple[int, int, int]:
+def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False,
+                 filter_topic: Optional[str] = None, filter_from: Optional[str] = None,
+                 filter_to: Optional[str] = None, min_size: Optional[int] = None,
+                 max_size: Optional[int] = None) -> tuple[int, int, int]:
     """
     Fetch Zoom recordings, present each via Telegram for approval, upload approved ones.
     Returns (uploaded, skipped, failed).
@@ -49,17 +82,83 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False) -> tuple[
     undo = UndoStore(config.UNDO_FILE)
     zoom = ZoomClient()
 
-    bot.send_message(f"🔍 <b>Fetching Zoom recordings</b> from the last <b>{days} day(s)</b>...")
+    # Build filter description
+    filter_desc = f"from the last <b>{days} day(s)</b>"
+    if filter_topic:
+        filter_desc += f" with topic containing <b>'{filter_topic}'</b>"
+    if filter_from or filter_to:
+        date_range = ""
+        if filter_from and filter_to:
+            date_range = f"from <b>{filter_from}</b> to <b>{filter_to}</b>"
+        elif filter_from:
+            date_range = f"from <b>{filter_from}</b>"
+        elif filter_to:
+            date_range = f"until <b>{filter_to}</b>"
+        filter_desc += f" {date_range}"
+    if min_size or max_size:
+        size_filter = ""
+        if min_size and max_size:
+            size_filter = f"size between <b>{min_size}MB</b> and <b>{max_size}MB</b>"
+        elif min_size:
+            size_filter = f"size at least <b>{min_size}MB</b>"
+        elif max_size:
+            size_filter = f"size at most <b>{max_size}MB</b>"
+        filter_desc += f" ({size_filter})"
+
+    bot.send_message(f"🔍 <b>Fetching Zoom recordings</b> {filter_desc}...")
     try:
         recordings = sorted(
-            zoom.iter_recordings(days),
+            zoom.iter_recordings(days, fetch_participants=config.FETCH_PARTICIPANTS),
             key=lambda r: r.start_time or datetime.min.replace(tzinfo=timezone.utc),
         )
     except ZoomError as exc:
         bot.send_message(f"❌ <b>Zoom error:</b> {exc}")
         return 0, 0, 0
 
-    pending = [r for r in recordings if not state.should_hide(r.key)]
+    # Apply filters
+    filtered_recordings = []
+    for rec in recordings:
+        # Topic filter
+        if filter_topic and filter_topic.lower() not in rec.topic.lower():
+            continue
+
+        # Date range filter
+        if filter_from or filter_to:
+            if not rec.start_time:
+                continue
+            from datetime import datetime
+            if filter_from:
+                try:
+                    from_date = datetime.strptime(filter_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    if rec.start_time < from_date:
+                        continue
+                except ValueError:
+                    bot.send_message(f"❌ Invalid date format for --filter-from: {filter_from}. Use YYYY-MM-DD.")
+                    return 0, 0, 0
+            if filter_to:
+                try:
+                    to_date = datetime.strptime(filter_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    # Include the entire end date
+                    to_date = to_date.replace(hour=23, minute=59, second=59)
+                    if rec.start_time > to_date:
+                        continue
+                except ValueError:
+                    bot.send_message(f"❌ Invalid date format for --filter-to: {filter_to}. Use YYYY-MM-DD.")
+                    return 0, 0, 0
+
+        # Size filter
+        if min_size or max_size:
+            if not rec.file_size:
+                continue
+            size_mb = rec.file_size / (1024 * 1024)
+            if min_size and size_mb < min_size:
+                continue
+            if max_size and size_mb > max_size:
+                continue
+
+        filtered_recordings.append(rec)
+
+    pending = [r for r in filtered_recordings if not state.should_hide(r.key)]
 
     if not pending:
         bot.send_message(
@@ -69,16 +168,37 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False) -> tuple[
         return 0, 0, 0
 
     bot.send_message(
-        f"📋 Found <b>{len(recordings)}</b> recording(s), "
+        f"📋 Found <b>{len(filtered_recordings)}</b> recording(s) matching filters, "
         f"<b>{len(pending)}</b> pending review."
     )
 
     uploaded = skipped = failed = 0
     try:
         for i, rec in enumerate(pending, start=1):
+            # Check for shutdown signal before processing each recording
+            if _shutdown_requested:
+                bot.send_message("🛑 <b>Run interrupted by shutdown signal.</b>")
+                log.info("Pipeline stopped due to shutdown signal.")
+                break
+
+            # Extract video metadata if enabled
+            if config.ENABLE_VIDEO_METADATA and rec.download_url:
+                resolution, bitrate = extract_video_metadata(rec.download_url)
+                rec.resolution = resolution
+                rec.bitrate = bitrate
+
+            # Generate thumbnail if enabled
+            thumbnail_data = None
+            if config.ENABLE_THUMBNAILS and rec.download_url:
+                thumbnail_data = generate_thumbnail(rec.download_url, config.THUMBNAIL_TIME_OFFSET)
+
             suggested_key, matched = categorize(rec.topic)
             req = ApprovalRequest(rec, i, len(pending), suggested_key, matched)
             decision = bot.get_user_decision(req)
+
+            # Send thumbnail if available
+            if thumbnail_data:
+                bot.send_photo(thumbnail_data, caption=f"📸 Thumbnail for: {rec.topic[:50]}")
 
             if decision.action == "quit":
                 bot.send_message("🛑 <b>Run stopped by user.</b>")
@@ -167,28 +287,18 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False) -> tuple[
                     )
             except Exception as exc:
                 failed += 1
-                log.error("Upload failed for %s: %s", final_name, exc)
+                error_context = {
+                    "recording_id": rec.key,
+                    "topic": rec.topic,
+                    "folder": folder["name"],
+                    "session_num": session_num,
+                    "filename": final_name,
+                }
+                log_error_with_traceback(exc, error_context)
                 state.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
 
-                # ── Feature 2: Rich error alert ──────────────────────────
-                err_str = str(exc)
-                if "Zoom download" in err_str or "Zoom stream" in err_str:
-                    source = "📥 <b>Source:</b> Zoom download failed"
-                elif "Drive" in err_str or "resumable" in err_str.lower():
-                    source = "☁️ <b>Source:</b> Google Drive upload failed"
-                else:
-                    source = "⚙️ <b>Source:</b> Unexpected error"
-
-                now_str = datetime.now(ZoneInfo(config.LOCAL_TIMEZONE)).strftime("%Y-%m-%d %H:%M")
-                alert = (
-                    f"❌ <b>Upload Failed!</b>\n\n"
-                    f"📄 <b>File:</b> <code>{final_name}</code>\n"
-                    f"📁 <b>Folder:</b> {folder['name']}\n"
-                    f"🕐 <b>Time:</b> {now_str}\n"
-                    f"{source}\n\n"
-                    f"<b>Error:</b> <code>{err_str[:300]}</code>\n\n"
-                    f"ℹ️ Recording marked as <i>failed</i> — send /reset then /run to retry it."
-                )
+                # Use enhanced error notification
+                alert = format_error_notification(exc, error_context)
                 bot.send_message(alert)
 
     except KeyboardInterrupt:
@@ -221,6 +331,68 @@ def _handle_status(bot: "TelegramBot") -> None:
     bot.send_message("\n".join(lines))
 
 
+def _handle_stats(bot: "TelegramBot") -> None:
+    """Send detailed statistics/analytics to Telegram."""
+    state_path = config.STATE_FILE
+    if not state_path.exists():
+        bot.send_message("📊 <b>Statistics:</b> No data available yet.")
+        return
+    
+    try:
+        data: dict = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        bot.send_message("⚠️ Could not read processed.json.")
+        return
+    
+    if not data:
+        bot.send_message("📊 <b>Statistics:</b> No recordings processed yet.")
+        return
+    
+    # Calculate statistics
+    uploaded = sum(1 for v in data.values() if v.get("status") == "uploaded")
+    skipped = sum(1 for v in data.values() if v.get("status") == "skipped")
+    failed = sum(1 for v in data.values() if v.get("status") == "failed")
+    
+    # Folder statistics
+    folder_counts: dict[str, int] = {}
+    for v in data.values():
+        folder = v.get("folder", "Unknown")
+        folder_counts[folder] = folder_counts.get(folder, 0) + 1
+    
+    # Recent uploads (last 5)
+    recent_uploads = []
+    for key, v in sorted(data.items(), key=lambda x: x[1].get("at", ""), reverse=True)[:5]:
+        if v.get("status") == "uploaded":
+            topic = v.get("topic", "Unknown")[:30]
+            folder = v.get("folder", "Unknown")
+            recent_uploads.append(f"• {topic} → {folder}")
+    
+    # Build statistics message
+    lines = [
+        "📊 <b>Detailed Statistics</b>",
+        "",
+        "<b>Overview:</b>",
+        f"• Total Processed: <b>{len(data)}</b>",
+        f"• Uploaded: <b>{uploaded}</b>",
+        f"• Skipped: <b>{skipped}</b>",
+        f"• Failed: <b>{failed}</b>",
+        "",
+        "<b>Uploads by Folder:</b>",
+    ]
+    
+    for folder, count in sorted(folder_counts.items(), key=lambda x: x[1], reverse=True):
+        lines.append(f"• {folder}: <b>{count}</b>")
+    
+    if recent_uploads:
+        lines.extend([
+            "",
+            "<b>Recent Uploads (Last 5):</b>",
+        ])
+        lines.extend(recent_uploads)
+    
+    bot.send_message("\n".join(lines))
+
+
 def _handle_reset(bot: "TelegramBot") -> None:
     """Clear processed.json after confirmation."""
     state_path = config.STATE_FILE
@@ -229,6 +401,76 @@ def _handle_reset(bot: "TelegramBot") -> None:
         bot.send_message("🗑️ <b>Reset complete.</b> processed.json cleared — all recordings will be offered again.")
     else:
         bot.send_message("ℹ️ Nothing to reset — processed.json did not exist.")
+
+
+def _handle_backup(bot: "TelegramBot") -> None:
+    """Backup state files (processed.json and undo_history.json) as a downloadable file."""
+    import zipfile
+    import io
+    from datetime import datetime, timezone
+    
+    # Create a zip file in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        if config.STATE_FILE.exists():
+            zipf.write(config.STATE_FILE, config.STATE_FILE.name)
+        if config.UNDO_FILE.exists():
+            zipf.write(config.UNDO_FILE, config.UNDO_FILE.name)
+    
+    zip_buffer.seek(0)
+    
+    # Send the zip file via Telegram
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"zoom_drive_backup_{timestamp}.zip"
+    
+    try:
+        bot.send_document(zip_buffer.getvalue(), filename)
+        bot.send_message(f"✅ <b>Backup created:</b> {filename}\n\nContains processed.json and undo_history.json.")
+    except Exception as exc:
+        bot.send_message(f"❌ <b>Backup failed:</b> {exc}")
+        log.error("Backup failed: %s", exc)
+
+
+def _handle_restore(bot: "TelegramBot", file_data: bytes, filename: str) -> None:
+    """Restore state files from a backup zip file."""
+    import zipfile
+    import io
+
+    try:
+        zip_buffer = io.BytesIO(file_data)
+        with zipfile.ZipFile(zip_buffer, 'r') as zipf:
+            # List files in the zip
+            file_list = zipf.namelist()
+
+            # Restore processed.json
+            if "processed.json" in file_list:
+                with zipf.open("processed.json") as f:
+                    config.STATE_FILE.write_bytes(f.read())
+
+            # Restore undo_history.json
+            if "undo_history.json" in file_list:
+                with zipf.open("undo_history.json") as f:
+                    config.UNDO_FILE.write_bytes(f.read())
+
+        bot.send_message(
+            f"✅ <b>Restore complete.</b>\n\n"
+            f"Restored from: {filename}\n"
+            f"Files: {', '.join(file_list)}\n\n"
+            f"ℹ️ Send /status to verify the restored state."
+        )
+    except Exception as exc:
+        bot.send_message(f"❌ <b>Restore failed:</b> {exc}")
+        log.error("Restore failed: %s", exc)
+
+
+def _handle_restore_from_telegram(bot: "TelegramBot", file_id: str, filename: str) -> None:
+    """Handle restore command triggered by uploading a document to Telegram."""
+    file_data = bot.get_document_file(file_id)
+    if not file_data:
+        bot.send_message("❌ <b>Failed to download the document.</b>")
+        return
+
+    _handle_restore(bot, file_data, filename)
 
 
 def _describe(e: dict) -> str:
@@ -240,6 +482,235 @@ def _describe(e: dict) -> str:
         parts.append(f"{how} <code>{e['video_name']}</code>")
     parts.append("offer this recording again on the next /run")
     return "\n".join(f"• {p}" for p in parts)
+
+
+def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
+                  min_size: Optional[int] = None, max_size: Optional[int] = None) -> None:
+    """Handle batch mode: select multiple recordings for batch upload/skip."""
+    state = StateStore(config.STATE_FILE)
+    zoom = ZoomClient()
+
+    bot.send_message(f"🔍 <b>Fetching recordings for batch selection</b> (last {days} days)...")
+    try:
+        recordings = sorted(
+            zoom.iter_recordings(days, fetch_participants=config.FETCH_PARTICIPANTS),
+            key=lambda r: r.start_time or datetime.min.replace(tzinfo=timezone.utc),
+        )
+    except ZoomError as exc:
+        bot.send_message(f"❌ <b>Zoom error:</b> {exc}")
+        return
+
+    # Apply filters
+    filtered_recordings = []
+    for rec in recordings:
+        if min_size or max_size:
+            if not rec.file_size:
+                continue
+            size_mb = rec.file_size / (1024 * 1024)
+            if min_size and size_mb < min_size:
+                continue
+            if max_size and size_mb > max_size:
+                continue
+        filtered_recordings.append(rec)
+
+    pending = [r for r in filtered_recordings if not state.should_hide(r.key)]
+
+    if not pending:
+        bot.send_message("✅ <b>No pending recordings</b> for batch selection.")
+        return
+
+    # Get batch selection from user
+    batch_req = bot.get_batch_selection(pending)
+    if not batch_req or not batch_req.action:
+        return
+
+    # Get selected recordings
+    selected_recordings = [r for r in pending if r.key in batch_req.selected_keys]
+
+    if batch_req.action == "skip":
+        for rec in selected_recordings:
+            if not dry_run:
+                state.mark(rec.key, "skipped", topic=rec.topic)
+        bot.send_message(f"⏭ <b>Batch skip complete:</b> {len(selected_recordings)} recordings marked as skipped.")
+        return
+
+    if batch_req.action == "upload":
+        # For now, use the default folder for batch uploads
+        # TODO: Add folder selection UI in future version
+        folder_key = config.DEFAULT_FOLDER_KEY
+        folder = config.FOLDERS[folder_key]
+        drive = None
+        if not dry_run:
+            try:
+                drive = get_drive_service(folder)
+            except Exception as exc:
+                bot.send_message(f"❌ <b>Google Drive auth failed for {folder['name']}:</b> {exc}")
+                return
+
+        # Get session number for batch
+        auto_s = get_next_session_number(drive, folder["id"])
+        code = folder.get("code", "Course")
+
+        bot.send_message(
+            f"📁 <b>Target Folder:</b> {folder['name']} ({code})\n"
+            f"<b>Auto-detected Session:</b> S{auto_s}\n"
+            f"<b>Uploads:</b> {len(selected_recordings)} recordings\n\n"
+            f"Reply with session number (e.g. 26) or click to use S{auto_s}",
+            reply_markup={"inline_keyboard": [[{"text": f"✅ Use S{auto_s}", "callback_data": f"batch_session:{auto_s}"}]]}
+        )
+
+        # Wait for session number
+        session_num = None
+        while True:
+            try:
+                resp = requests.get(f"{bot.base_url}/getUpdates", params={"offset": bot.offset, "timeout": 30}, timeout=35)
+                if resp.status_code != 200:
+                    time.sleep(2)
+                    continue
+                updates = resp.json().get("result", [])
+                for u in updates:
+                    bot.offset = u["update_id"] + 1
+                    if "callback_query" in u:
+                        cb = u["callback_query"]
+                        if str(cb.get("from", {}).get("id")) != bot.chat_id:
+                            continue
+                        data = cb.get("data", "")
+                        if data.startswith("batch_session:"):
+                            session_num = int(data.split(":")[1])
+                            bot.answer_callback(cb["id"], f"Session S{session_num} confirmed!")
+                            break
+                    elif "message" in u:
+                        msg = u["message"]
+                        if str(msg.get("from", {}).get("id")) != bot.chat_id:
+                            continue
+                        txt = msg.get("text", "").strip().lower()
+                        if txt.startswith("s"):
+                            txt = txt[1:]
+                        if txt.isdigit():
+                            session_num = int(txt)
+                            if session_num < 1 or session_num > 999:
+                                bot.send_message(f"❌ Invalid session number: {session_num}. Please enter a number between 1 and 999.")
+                                continue
+                            break
+                if session_num:
+                    break
+            except Exception as exc:
+                log.warning("Telegram polling retry: %s", exc)
+                time.sleep(2)
+
+        if not session_num:
+            return
+
+        # Process batch uploads
+        uploaded = failed = 0
+        for i, rec in enumerate(selected_recordings, start=1):
+            if _shutdown_requested:
+                bot.send_message("🛑 <b>Batch upload interrupted by shutdown signal.</b>")
+                break
+
+            final_name = build_drive_filename(rec, code, session_num + i - 1)
+
+            if dry_run:
+                bot.send_message(f"🧪 <b>[dry-run]</b> Would upload <code>{final_name}</code>")
+                uploaded += 1
+                continue
+
+            bot.send_message(f"🚀 <b>Uploading {i}/{len(selected_recordings)}:</b> <code>{final_name}</code>")
+            try:
+                result = upload_recording(drive, zoom, rec, folder, session_num + i - 1, bot=bot)
+                result = result or {}
+                state.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],
+                           drive_file_id=result.get("id"))
+                uploaded += 1
+                bot.send_message(f"✅ <b>Uploaded:</b> <code>{final_name}</code>")
+
+                # Update docx if needed
+                link = result.get("webViewLink")
+                if link:
+                    try:
+                        from docx_updater import update_docx_in_drive
+                        docx_info = update_docx_in_drive(drive, folder["id"], rec, link, session_num + i - 1)
+                        if docx_info.get("status") == "updated":
+                            bot.send_message(f"📝 <b>Docx updated:</b> session {session_num + i - 1}")
+                    except Exception as docx_exc:
+                        log.error("Docx update failed: %s", docx_exc)
+            except Exception as exc:
+                failed += 1
+                error_context = {
+                    "recording_id": rec.key,
+                    "topic": rec.topic,
+                    "folder": folder["name"],
+                    "session_num": session_num + i - 1,
+                    "filename": final_name,
+                }
+                log_error_with_traceback(exc, error_context)
+                state.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
+                alert = format_error_notification(exc, error_context)
+                bot.send_message(alert)
+
+        emoji = "✅" if not failed else "⚠️"
+        bot.send_message(
+            f"{emoji} <b>Batch upload complete.</b>\n\n"
+            f"• Uploaded: <b>{uploaded}</b>\n"
+            f"• Failed: <b>{failed}</b>"
+        )
+
+
+def _create_webhook_app(bot: "TelegramBot"):
+    """Create Flask app for Telegram webhook."""
+    global _flask_app
+    from flask import Flask, request, abort, jsonify
+    import hmac
+    import hashlib
+
+    app = Flask(__name__)
+
+    @app.route(f"/webhook/<bot_token>", methods=["POST"])
+    def webhook(bot_token):
+        """Handle incoming Telegram webhook updates."""
+        # Verify bot token matches
+        if bot_token != bot.token:
+            log.warning("Webhook received with invalid token")
+            abort(403)
+
+        # Verify secret token if configured
+        if config.TELEGRAM_WEBHOOK_SECRET:
+            signature = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if not hmac.compare_digest(signature, config.TELEGRAM_WEBHOOK_SECRET):
+                log.warning("Webhook received with invalid secret token")
+                abort(403)
+
+        # Process the update
+        try:
+            update = request.get_json()
+            if not update:
+                log.warning("Webhook received empty update")
+                return jsonify({"status": "error"}), 400
+
+            # Queue the update for processing
+            result = bot.process_update(update)
+            if result:
+                bot._queue.append(result)
+
+            return jsonify({"status": "ok"}), 200
+        except Exception as exc:
+            log.error("Error processing webhook update: %s", exc)
+            return jsonify({"status": "error"}), 500
+
+    @app.route("/health", methods=["GET"])
+    def health():
+        """Health check endpoint."""
+        return jsonify({"status": "healthy", "mode": "webhook"}), 200
+
+    return app
+
+
+def _run_webhook_server(app, host: str, port: int):
+    """Run Flask webhook server in a separate thread."""
+    try:
+        app.run(host=host, port=port, threaded=True)
+    except Exception as exc:
+        log.error("Webhook server error: %s", exc)
 
 
 def _handle_undo_list(bot: "TelegramBot") -> None:
@@ -329,33 +800,147 @@ def bot_mode(dry_run: bool = False) -> None:
     Waits for Telegram commands and runs the pipeline on demand.
     Start with:  python main.py --bot
     """
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
     bot = TelegramBot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
-    bot.send_message(
-        "🟢 <b>zoom-drive bot started!</b>\n\n"
+
+    # Get size filters from config
+    min_size = config.MIN_RECORDING_SIZE_MB if config.MIN_RECORDING_SIZE_MB > 0 else None
+    max_size = config.MAX_RECORDING_SIZE_MB if config.MAX_RECORDING_SIZE_MB > 0 else None
+
+    # Initialize webhook if enabled
+    webhook_mode = config.TELEGRAM_USE_WEBHOOK
+    if webhook_mode:
+        if not config.TELEGRAM_WEBHOOK_URL:
+            log.error("TELEGRAM_USE_WEBHOOK is True but TELEGRAM_WEBHOOK_URL is not set")
+            bot.send_message("❌ <b>Configuration error:</b> TELEGRAM_WEBHOOK_URL not set for webhook mode")
+            return
+
+        # Create and start Flask webhook server
+        webhook_app = _create_webhook_app(bot)
+        webhook_url = config.TELEGRAM_WEBHOOK_URL
+
+        # Set webhook with Telegram
+        if not bot.set_webhook(webhook_url, config.TELEGRAM_WEBHOOK_SECRET):
+            bot.send_message("❌ <b>Failed to set webhook</b>. Falling back to polling mode.")
+            webhook_mode = False
+        else:
+            log.info("Webhook mode enabled: %s", webhook_url)
+            # Start Flask server in separate thread
+            global _flask_thread
+            _flask_thread = threading.Thread(
+                target=_run_webhook_server,
+                args=(webhook_app, config.WEBHOOK_HOST, config.WEBHOOK_PORT),
+                daemon=True
+            )
+            _flask_thread.start()
+            time.sleep(2)  # Give server time to start
+
+    # Build startup message
+    startup_msg = (
+        f"🟢 <b>zoom-drive bot started!</b>\n\n"
+        f"Mode: <b>{'Webhook' if webhook_mode else 'Polling'}</b>\n\n"
         "Commands:\n"
         "• /run — process last 7 days\n"
         "• /run 30 — process last 30 days\n"
+        "• /run --dry — dry-run (no uploads)\n"
+        "• /batch — select multiple recordings for batch upload/skip\n"
         "• /undo — undo a recent upload + docx link\n"
         "• /status — show processed count\n"
+        "• /stats — detailed statistics\n"
         "• /reset — clear history\n"
+        "• /backup — download state backup\n"
+        "• /restore — upload backup file to restore state\n"
         "• /help — show commands"
     )
+
+    if config.SCHEDULED_RUN_TIME:
+        startup_msg += f"\n\n⏰ <b>Scheduled run:</b> Daily at {config.SCHEDULED_RUN_TIME}"
+
+    bot.send_message(startup_msg)
     log.info("Bot mode started. Waiting for Telegram commands.")
 
-    while True:
-        try:
-            cmd, arg = bot.listen_for_command()
+    try:
+        while True:
+            # Check for shutdown signal
+            if _shutdown_requested:
+                bot.send_message("🔴 <b>Bot is shutting down gracefully.</b> Goodbye!")
+                log.info("Bot mode stopping due to shutdown signal.")
+                break
+
+            # Check for scheduled run
+            if config.SCHEDULED_RUN_TIME:
+                from zoneinfo import ZoneInfo
+                now = datetime.now(ZoneInfo(config.LOCAL_TIMEZONE))
+                scheduled_time = config.SCHEDULED_RUN_TIME
+                if now.strftime("%H:%M") == scheduled_time and now.second < 5:  # Only trigger in first 5 seconds of minute
+                    log.info("Triggering scheduled run at %s", scheduled_time)
+                    bot.send_message(f"⏰ <b>Scheduled run triggered</b> at {scheduled_time}")
+                    uploaded, skipped, failed = run_pipeline(bot, config.LOOKBACK_DAYS, dry_run=dry_run,
+                                                           min_size=min_size, max_size=max_size)
+                    emoji = "✅" if not failed else "⚠️"
+                    bot.send_message(
+                        f"{emoji} <b>Scheduled run complete.</b>\n\n"
+                        f"• Uploaded: <b>{uploaded}</b>\n"
+                        f"• Skipped:  <b>{skipped}</b>\n"
+                        f"• Failed:   <b>{failed}</b>"
+                    )
+                    time.sleep(60)  # Wait 1 minute to avoid triggering again
+                    continue
+
+            # Get command from queue (webhook) or polling
+            if webhook_mode:
+                # Webhook mode: check queue periodically
+                if bot._queue:
+                    cmd, arg = bot._queue.pop(0)
+                else:
+                    time.sleep(1)
+                    continue
+            else:
+                # Polling mode: listen for command
+                cmd, arg = bot.listen_for_command()
+
+            # Check again after receiving command
+            if _shutdown_requested:
+                bot.send_message("🔴 <b>Bot is shutting down gracefully.</b> Goodbye!")
+                log.info("Bot mode stopping due to shutdown signal.")
+                break
+
             days = arg if isinstance(arg, int) else config.LOOKBACK_DAYS
 
             if cmd == "run":
-                uploaded, skipped, failed = run_pipeline(bot, days, dry_run=dry_run)
+                uploaded, skipped, failed = run_pipeline(bot, days, dry_run=dry_run,
+                                                          min_size=min_size, max_size=max_size)
+                emoji = "✅" if not failed else "⚠️"
+                if dry_run:
+                    bot.send_message(
+                        f"{emoji} <b>Dry-run complete.</b>\n\n"
+                        f"• Would upload: <b>{uploaded}</b>\n"
+                        f"• Would skip:  <b>{skipped}</b>\n"
+                        f"• Failed:   <b>{failed}</b>\n\n"
+                        "Send /run to perform actual uploads, or /help for options."
+                    )
+                else:
+                    bot.send_message(
+                        f"{emoji} <b>Run complete.</b>\n\n"
+                        f"• Uploaded: <b>{uploaded}</b>\n"
+                        f"• Skipped:  <b>{skipped}</b>\n"
+                        f"• Failed:   <b>{failed}</b>\n\n"
+                        "Send /run to start another run, or /help for options."
+                    )
+
+            elif cmd == "run_dry":
+                uploaded, skipped, failed = run_pipeline(bot, days, dry_run=True,
+                                                          min_size=min_size, max_size=max_size)
                 emoji = "✅" if not failed else "⚠️"
                 bot.send_message(
-                    f"{emoji} <b>Run complete.</b>\n\n"
-                    f"• Uploaded: <b>{uploaded}</b>\n"
-                    f"• Skipped:  <b>{skipped}</b>\n"
+                    f"{emoji} <b>Dry-run complete.</b>\n\n"
+                    f"• Would upload: <b>{uploaded}</b>\n"
+                    f"• Would skip:  <b>{skipped}</b>\n"
                     f"• Failed:   <b>{failed}</b>\n\n"
-                    "Send /run to start another run, or /help for options."
+                    "Send /run to perform actual uploads, or /help for options."
                 )
 
             elif cmd == "undo_list":
@@ -370,30 +955,62 @@ def bot_mode(dry_run: bool = False) -> None:
             elif cmd == "undo_no":
                 bot.send_message("👍 Cancelled — nothing was changed.")
 
+            elif cmd == "batch":
+                _handle_batch(bot, days, dry_run=dry_run, min_size=min_size, max_size=max_size)
+
             elif cmd == "status":
                 _handle_status(bot)
 
+            elif cmd == "stats":
+                _handle_stats(bot)
+
             elif cmd == "reset":
                 _handle_reset(bot)
+
+            elif cmd == "backup":
+                _handle_backup(bot)
+
+            elif cmd == "restore":
+                # arg is (file_id, filename)
+                file_id, filename = arg
+                _handle_restore_from_telegram(bot, file_id, filename)
 
             elif cmd == "help":
                 bot.send_message(
                     "📖 <b>Commands</b>\n\n"
                     "• /run — fetch & process last 7 days\n"
                     "• /run 30 — fetch & process last N days\n"
+                    "• /run --dry — dry-run (no uploads)\n"
+                    "• /batch — select multiple recordings for batch upload/skip\n"
                     "• /undo — undo a recent upload + docx link\n"
                     "• /status — how many recordings processed\n"
+                    "• /stats — detailed statistics\n"
                     "• /reset — clear processed.json\n"
+                    "• /backup — download state backup\n"
+                    "• /restore — upload backup file to restore state\n"
                     "• /help — this message"
                 )
 
-        except KeyboardInterrupt:
-            bot.send_message("🔴 <b>Bot is shutting down.</b> Goodbye!")
-            log.info("Bot mode stopped by KeyboardInterrupt.")
-            break
+    except KeyboardInterrupt:
+        bot.send_message("🔴 <b>Bot is shutting down.</b> Goodbye!")
+        log.info("Bot mode stopped by KeyboardInterrupt.")
+    except Exception as exc:
+        log.error("Unexpected bot loop error: %s", exc)
+    finally:
+        # Ensure state is saved before exit
+        log.info("Saving state before shutdown...")
+        try:
+            state = StateStore(config.STATE_FILE)
+            # State is already saved on each mark operation, but we ensure it's flushed
+            log.info("State saved successfully.")
         except Exception as exc:
-            log.error("Unexpected bot loop error: %s", exc)
-            time.sleep(5)
+            log.error("Failed to save state during shutdown: %s", exc)
+
+        # Cleanup webhook if enabled
+        if config.TELEGRAM_USE_WEBHOOK:
+            log.info("Cleaning up webhook...")
+            bot.delete_webhook()
+            log.info("Webhook deleted.")
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -415,7 +1032,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # ── One-shot terminal mode (original behaviour) ───────────────────────
     bot = TelegramBot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
-    uploaded, skipped, failed = run_pipeline(bot, args.days, dry_run=args.dry_run)
+
+    # Get size filters from config or command line
+    min_size = args.min_size if args.min_size else (config.MIN_RECORDING_SIZE_MB if config.MIN_RECORDING_SIZE_MB > 0 else None)
+    max_size = args.max_size if args.max_size else (config.MAX_RECORDING_SIZE_MB if config.MAX_RECORDING_SIZE_MB > 0 else None)
+
+    uploaded, skipped, failed = run_pipeline(bot, args.days, dry_run=args.dry_run,
+                                            filter_topic=args.filter_topic,
+                                            filter_from=args.filter_from,
+                                            filter_to=args.filter_to,
+                                            min_size=min_size, max_size=max_size)
     print(f"Done. Uploaded: {uploaded} | Skipped: {skipped} | Failed: {failed}")
     return 1 if failed else 0
 
