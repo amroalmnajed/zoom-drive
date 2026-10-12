@@ -31,7 +31,6 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application code
 COPY *.py ./
 COPY env.example .env
-COPY tests/ ./tests/
 
 # Create directory for state files
 RUN mkdir -p /app/data
