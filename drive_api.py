@@ -12,6 +12,7 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as UserCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaUpload
@@ -90,7 +91,7 @@ def _load_google_credentials(folder: Optional[dict] = None):
 
 def get_drive_service(folder: Optional[dict] = None):
     creds = _load_google_credentials(folder)
-    http = creds.authorize(httplib2.Http())
+    http = AuthorizedHttp(creds, httplib2.Http())
     return build("drive", "v3", http=http, cache_discovery=False)
 
 def preflight_check_folders(drive) -> None:
