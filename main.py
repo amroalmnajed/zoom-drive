@@ -541,85 +541,71 @@ def _handle_multi(bot: "TelegramBot", dry_run: bool = False) -> None:
 
     msg_id = bot.send_message("\n".join(lines), reply_markup={"inline_keyboard": keyboard})
 
-    # Track selected folders
-    selected_folders = set()
+    # Store multi state in bot for callback handling
+    bot._multi_state = {
+        "rec": rec,
+        "selected_folders": set(),
+        "msg_id": msg_id,
+        "dry_run": dry_run,
+        "start_time": time.time()
+    }
+    log.info("Multi-folder selection started, waiting for user input")
 
-    # Wait for folder selection with timeout
-    start_time = time.time()
-    timeout_seconds = 300  # 5 minutes
 
-    while True:
-        if time.time() - start_time > timeout_seconds:
-            log.warning("Multi-folder selection timed out")
-            bot.send_message("⏰ <b>Selection timed out.</b> Please try again.")
-            return
-
-        try:
-            resp = requests.get(f"{bot.base_url}/getUpdates", params={"offset": bot.offset, "timeout": 30}, timeout=35)
-            if resp.status_code != 200:
-                log.warning("Telegram API returned status %d", resp.status_code)
-                time.sleep(2)
-                continue
-            updates = resp.json().get("result", [])
-            for u in updates:
-                bot.offset = u["update_id"] + 1
-                if "callback_query" in u:
-                    cb = u["callback_query"]
-                    if str(cb.get("from", {}).get("id")) != bot.chat_id:
-                        continue
-                    data = cb.get("data", "")
-                    bot.answer_callback(cb["id"], "Processing...")
-
-                    if data.startswith("multi_folder:"):
-                        folder_key = data.split(":")[1]
-                        if folder_key in selected_folders:
-                            selected_folders.remove(folder_key)
-                        else:
-                            selected_folders.add(folder_key)
-                        # Update keyboard
-                        new_keyboard = []
-                        for key, folder in config.FOLDERS.items():
-                            checkbox = "☑" if key in selected_folders else "☐"
-                            new_keyboard.append([{"text": f"{checkbox} {key}) {folder['name']} ({folder['code']})", "callback_data": f"multi_folder:{key}"}])
-                        new_keyboard.append([
-                            {"text": "✅ Upload to Selected", "callback_data": "multi_action:upload"},
-                            {"text": "🛑 Cancel", "callback_data": "multi_action:cancel"},
-                        ])
-                        try:
-                            payload = {"chat_id": bot.chat_id, "message_id": msg_id, "reply_markup": json.dumps({"inline_keyboard": new_keyboard})}
-                            requests.post(f"{bot.base_url}/editMessageReplyMarkup", json=payload, timeout=10)
-                        except Exception as exc:
-                            log.error("Failed to update keyboard: %s", exc)
-                        continue
-
-                    if data == "multi_action:upload":
-                        if not selected_folders:
-                            bot.answer_callback(cb["id"], "No folders selected!")
-                            continue
-                        if msg_id:
-                            bot.edit_message(msg_id, f"✅ <b>Selected {len(selected_folders)} folder(s)</b>")
-                        break
-
-                    if data == "multi_action:cancel":
-                        bot.send_message("🛑 <b>Multi-folder upload cancelled.</b>")
-                        return
-
-            if selected_folders:
-                break
-        except requests.exceptions.Timeout:
-            log.warning("Telegram polling timeout, retrying...")
-            continue
-        except requests.exceptions.RequestException as exc:
-            log.error("Telegram polling error: %s", exc)
-            time.sleep(2)
-        except Exception as exc:
-            log.error("Unexpected error in multi-folder selection: %s", exc)
-            time.sleep(2)
-
-    if not selected_folders:
+def _handle_multi_toggle(bot: "TelegramBot", folder_key: str) -> None:
+    """Handle folder toggle in multi selection."""
+    if not bot._multi_state:
+        bot.send_message("❌ No active multi-folder selection.")
         return
 
-    # Upload to each selected folder
+    state = bot._multi_state
+    selected_folders = state["selected_folders"]
+
+    if folder_key in selected_folders:
+        selected_folders.remove(folder_key)
+    else:
+        selected_folders.add(folder_key)
+
+    # Update keyboard
+    new_keyboard = []
+    for key, folder in config.FOLDERS.items():
+        checkbox = "☑" if key in selected_folders else "☐"
+        new_keyboard.append([{"text": f"{checkbox} {key}) {folder['name']} ({folder['code']})", "callback_data": f"multi_folder:{key}"}])
+    new_keyboard.append([
+        {"text": "✅ Upload to Selected", "callback_data": "multi_action:upload"},
+        {"text": "🛑 Cancel", "callback_data": "multi_action:cancel"},
+    ])
+
+    try:
+        payload = {"chat_id": bot.chat_id, "message_id": state["msg_id"], "reply_markup": json.dumps({"inline_keyboard": new_keyboard})}
+        requests.post(f"{bot.base_url}/editMessageReplyMarkup", json=payload, timeout=10)
+        log.info("Multi-folder selection updated: %s", selected_folders)
+    except Exception as exc:
+        log.error("Failed to update multi-folder keyboard: %s", exc)
+
+
+def _handle_multi_upload(bot: "TelegramBot") -> None:
+    """Handle upload action in multi selection."""
+    if not bot._multi_state:
+        bot.send_message("❌ No active multi-folder selection.")
+        return
+
+    state = bot._multi_state
+    selected_folders = state["selected_folders"]
+
+    if not selected_folders:
+        bot.send_message("❌ No folders selected!")
+        return
+
+    bot.edit_message(state["msg_id"], f"✅ <b>Selected {len(selected_folders)} folder(s)</b>")
+
+    # Perform the actual upload
+    rec = state["rec"]
+    dry_run = state["dry_run"]
+    state_store = StateStore(config.STATE_FILE)
+    undo = UndoStore(config.UNDO_FILE)
+    zoom = ZoomClient()
+
     uploaded = failed = 0
     for folder_key in selected_folders:
         if _shutdown_requested:
@@ -650,8 +636,8 @@ def _handle_multi(bot: "TelegramBot", dry_run: bool = False) -> None:
         try:
             result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot)
             result = result or {}
-            state.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],
-                       drive_file_id=result.get("id"))
+            state_store.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],
+                            drive_file_id=result.get("id"))
             uploaded += 1
             bot.send_message(f"✅ <b>Uploaded to {folder['name']}:</b> <code>{final_name}</code>")
 
@@ -676,6 +662,30 @@ def _handle_multi(bot: "TelegramBot", dry_run: bool = False) -> None:
                     bot.send_message(f"⚠️ <b>Docx update failed in {folder['name']}:</b> {docx_exc}")
             else:
                 log.warning("No webViewLink in upload result, skipping docx update for folder %s", folder['name'])
+
+            # Add to undo history
+            docx_updated = docx_info.get("status") == "updated" if link else False
+            if result.get("id"):
+                entry_id = undo.add({
+                    "rec_key": rec.key,
+                    "topic": rec.topic,
+                    "folder_key": folder_key,
+                    "folder_name": folder["name"],
+                    "session": session_num,
+                    "video_name": final_name,
+                    "video_id": result.get("id"),
+                    "video_uploaded": True,
+                    "link": link,
+                    "docx_id": docx_info.get("file_id") if docx_updated else None,
+                    "docx_name": docx_info.get("file_name") if docx_updated else None,
+                    "docx_updated": docx_updated,
+                    "original_cell_xml": docx_info.get("original_cell_xml", []),
+                })
+                bot.send_message(
+                    f"Done with <code>{final_name}</code> in {folder['name']}. Made a mistake?",
+                    reply_markup={"inline_keyboard": [[
+                        {"text": "↩️ Undo this upload", "callback_data": f"undo:{entry_id}"}]]},
+                )
         except Exception as exc:
             failed += 1
             error_context = {
@@ -686,7 +696,7 @@ def _handle_multi(bot: "TelegramBot", dry_run: bool = False) -> None:
                 "filename": final_name,
             }
             log_error_with_traceback(exc, error_context)
-            state.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
+            state_store.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
             alert = format_error_notification(exc, error_context)
             bot.send_message(alert)
 
@@ -696,6 +706,20 @@ def _handle_multi(bot: "TelegramBot", dry_run: bool = False) -> None:
         f"• Uploaded to: <b>{uploaded}</b> folder(s)\n"
         f"• Failed: <b>{failed}</b> folder(s)"
     )
+
+    # Clear multi state
+    bot._multi_state = None
+
+
+def _handle_multi_cancel(bot: "TelegramBot") -> None:
+    """Handle cancel action in multi selection."""
+    if not bot._multi_state:
+        bot.send_message("❌ No active multi-folder selection.")
+        return
+
+    bot.send_message("🛑 <b>Multi-folder upload cancelled.</b>")
+    bot._multi_state = None
+
 
 
 def _create_webhook_app(bot: "TelegramBot"):
@@ -999,6 +1023,15 @@ def bot_mode(dry_run: bool = False) -> None:
 
             elif cmd == "multi":
                 _handle_multi(bot, dry_run=dry_run)
+
+            elif cmd == "multi_toggle":
+                _handle_multi_toggle(bot, str(arg))
+
+            elif cmd == "multi_upload":
+                _handle_multi_upload(bot)
+
+            elif cmd == "multi_cancel":
+                _handle_multi_cancel(bot)
 
             elif cmd == "status":
                 _handle_status(bot)

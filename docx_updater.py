@@ -332,7 +332,19 @@ def revert_link_in_document(doc, url: str, original_cell_xml: list[str]) -> str:
 # --------------------------------------------------------------------------- #
 def _download(drive, file_id: str) -> io.BytesIO:
     from googleapiclient.http import MediaIoBaseDownload
-    request = drive.files().get_media(fileId=file_id, supportsAllDrives=True)
+
+    # First, get file metadata to check if it's a Google Docs file
+    metadata = drive.files().get(fileId=file_id, fields="mimeType", supportsAllDrives=True).execute()
+    mime_type = metadata.get("mimeType", "")
+
+    # Google Docs files need to be exported
+    if mime_type.startswith("application/vnd.google-apps"):
+        log.info("File is a Google Docs file (mimeType=%s), exporting as .docx", mime_type)
+        request = drive.files().export(fileId=file_id, mimeType=DOCX_MIME, supportsAllDrives=True)
+    else:
+        # Binary file, download directly
+        request = drive.files().get_media(fileId=file_id, supportsAllDrives=True)
+
     fh = io.BytesIO()
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -344,11 +356,30 @@ def _download(drive, file_id: str) -> io.BytesIO:
 
 def _upload(drive, file_id: str, doc) -> None:
     from googleapiclient.http import MediaIoBaseUpload
+
+    # Get file metadata to check if it's a Google Docs file
+    metadata = drive.files().get(fileId=file_id, fields="mimeType", supportsAllDrives=True).execute()
+    mime_type = metadata.get("mimeType", "")
+
     out = io.BytesIO()
     doc.save(out)
     out.seek(0)
     media = MediaIoBaseUpload(out, mimetype=DOCX_MIME, resumable=True)
-    drive.files().update(fileId=file_id, media_body=media, supportsAllDrives=True, fields="id").execute()
+
+    # If it's a Google Docs file, we need to convert it to a regular .docx file
+    if mime_type.startswith("application/vnd.google-apps"):
+        log.info("Converting Google Docs file to regular .docx")
+        # Update with conversion - this will convert Google Docs to binary .docx
+        drive.files().update(
+            fileId=file_id,
+            media_body=media,
+            supportsAllDrives=True,
+            fields="id",
+            mimeType=DOCX_MIME  # Force conversion to binary .docx
+        ).execute()
+    else:
+        # Regular .docx file, just update
+        drive.files().update(fileId=file_id, media_body=media, supportsAllDrives=True, fields="id").execute()
 
 
 def update_docx_in_drive(drive, folder_id: str, rec, web_view_link: str, session_num: int) -> dict:

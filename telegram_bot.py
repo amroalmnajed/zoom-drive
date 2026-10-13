@@ -20,6 +20,7 @@ class TelegramBot:
         self.offset = 0
         self._deferred: list[dict] = []   # undo taps that arrived mid-run
         self._queue: list[tuple] = []     # interpreted commands waiting to be returned
+        self._multi_state = None          # Track multi-folder selection state
         self._flush_old_updates()
 
     def _flush_old_updates(self) -> None:
@@ -361,6 +362,16 @@ class TelegramBot:
                 if data.startswith(prefix):
                     self.answer_callback(cb["id"])
                     return cmd, data[len(prefix):]
+            # Handle multi-folder callbacks
+            if data.startswith("multi_folder:"):
+                self.answer_callback(cb["id"])
+                return "multi_toggle", data.split(":")[1]
+            if data == "multi_action:upload":
+                self.answer_callback(cb["id"])
+                return "multi_upload", ""
+            if data == "multi_action:cancel":
+                self.answer_callback(cb["id"])
+                return "multi_cancel", ""
             return None
 
         msg = u.get("message") or u.get("edited_message")
