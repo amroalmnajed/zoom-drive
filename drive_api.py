@@ -4,14 +4,12 @@ import re
 import time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
-import httplib2
 import requests
 import urllib3
 from google.auth.exceptions import RefreshError
-from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.auth.transport.requests import Request as GoogleAuthRequest, AuthorizedSession
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as UserCredentials
-from google_auth_httplib2 import AuthorizedHttp
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -91,7 +89,7 @@ def _load_google_credentials(folder: Optional[dict] = None):
 
 def get_drive_service(folder: Optional[dict] = None):
     creds = _load_google_credentials(folder)
-    http = AuthorizedHttp(creds, http=httplib2.Http(timeout=config.HTTP_TIMEOUT_SECONDS))
+    http = AuthorizedSession(creds)
     return build("drive", "v3", http=http, cache_discovery=False)
 
 def preflight_check_folders(drive) -> None:
@@ -253,7 +251,7 @@ def _is_retryable_http_error(exc: HttpError) -> bool:
 def _initiate_resumable_upload(creds, folder_id: str, name: str, size: int, description: str, token_path: Path) -> str:
     """
     Start a Google Drive resumable upload session and return the upload URI.
-    Uses the requests library directly to avoid httplib2's 308-as-redirect bug.
+    Uses the requests library directly for reliable HTTP 308 handling.
     """
     # Proactively refresh if we already know it's expired
     if not creds.valid and creds.refresh_token:
@@ -332,10 +330,8 @@ def upload_recording(
 ) -> Optional[dict]:
     """
     Stream a Zoom recording directly into Google Drive using a pure-requests
-    resumable upload.  This bypasses httplib2 entirely for the data transfer,
-    which eliminates the RedirectMissingLocation crash caused by Drive sending
-    HTTP 308 "Resume Incomplete" responses that httplib2 wrongly treats as
-    broken redirects.
+    resumable upload. This uses requests for reliable HTTP 308 handling,
+    which eliminates issues with HTTP 308 "Resume Incomplete" responses.
 
     If bot is provided, a single Telegram message is sent at the start and then
     edited in-place to show live upload progress.

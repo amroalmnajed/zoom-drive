@@ -18,7 +18,6 @@ class TelegramBot:
         self.chat_id = str(chat_id)
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.offset = 0
-        self._deferred: list[dict] = []   # undo taps that arrived mid-run
         self._queue: list[tuple] = []     # interpreted commands waiting to be returned
         self._multi_state = None          # Track multi-folder selection state
         self._flush_old_updates()
@@ -199,16 +198,6 @@ class TelegramBot:
         except Exception:
             pass
 
-    def _stash_stray(self, u: dict) -> None:
-        """An Undo tap that arrived while a run is waiting for something else."""
-        cb = u.get("callback_query")
-        if not cb or str(cb.get("from", {}).get("id")) != self.chat_id:
-            return
-        # Don't stash undo callbacks - process them immediately
-        # They don't interfere with the current run
-        if str(cb.get("data", "")).startswith("undo"):
-            return  # Let it be processed immediately
-
     def get_user_decision(self, request: ApprovalRequest) -> ApprovalDecision:
         rec = request.recording
         folders = config.FOLDERS
@@ -288,7 +277,6 @@ class TelegramBot:
                             chosen = folders[f_key]['name']
                             if msg_id: self.edit_message(msg_id, f"✅ <b>Approved for:</b> {chosen} | {rec.topic}")
                             return ApprovalDecision("upload", f_key)
-                        self._stash_stray(u)
             except Exception as exc:
                 log.warning("Telegram polling retry: %s", exc)
                 time.sleep(2)
@@ -332,7 +320,6 @@ class TelegramBot:
                             self.answer_callback(cb["id"], f"Session S{s_num} confirmed!")
                             if msg_id: self.edit_message(msg_id, f"🎯 <b>Confirmed Session:</b> S{s_num}")
                             return s_num
-                        self._stash_stray(u)
                     elif "message" in u:
                         msg = u["message"]
                         if str(msg.get("from", {}).get("id")) != self.chat_id:
@@ -445,10 +432,6 @@ class TelegramBot:
         log.debug("Bot idle — waiting for /run command on Telegram.")
 
         while True:
-            while self._deferred:                      # taps that came in mid-run
-                result = self._interpret(self._deferred.pop(0))
-                if result:
-                    self._queue.append(result)
             if self._queue:
                 return self._queue.pop(0)
             try:

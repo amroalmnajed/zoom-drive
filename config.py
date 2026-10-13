@@ -190,10 +190,13 @@ UPLOAD_CHUNK_MB = int(os.getenv("UPLOAD_CHUNK_MB", "16"))
 UPLOAD_CHUNK_SIZE = UPLOAD_CHUNK_MB * 1024 * 1024
 
 # Retry policy for network errors, HTTP 429 and HTTP 5xx.
-MAX_RETRIES = 6
-BACKOFF_BASE_SECONDS = 2
-BACKOFF_MAX_SECONDS = 60
-HTTP_TIMEOUT_SECONDS = 120
+MAX_RETRIES = int(os.getenv("MAX_RETRIES", "6"))
+BACKOFF_BASE_SECONDS = float(os.getenv("BACKOFF_BASE_SECONDS", "2"))
+BACKOFF_MAX_SECONDS = int(os.getenv("BACKOFF_MAX_SECONDS", "60"))
+HTTP_TIMEOUT_SECONDS = int(os.getenv("HTTP_TIMEOUT_SECONDS", "120"))
+
+# Zoom API rate limiting (calls per second)
+ZOOM_RATE_LIMIT = float(os.getenv("ZOOM_RATE_LIMIT", "10"))
 
 # If True, videos you skipped with 's' are not offered again on later runs.
 # If False, they are shown again until uploaded (until they leave the lookback window).
@@ -255,19 +258,25 @@ def validate_config(need_google: bool = True) -> None:
     """Raise ValueError with a readable message if something is misconfigured."""
     problems: list[str] = []
 
-    for name in ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_USER_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+    # Zoom credentials
+    for name in ("ZOOM_ACCOUNT_ID", "ZOOM_CLIENT_ID", "ZOOM_CLIENT_SECRET", "ZOOM_USER_ID"):
         if not globals().get(name):
-            problems.append(f"Missing {name} (set it in .env or the environment).")
+            problems.append(f"Missing Zoom credential: {name} (set it in .env or Railway Variables).")
+
+    # Telegram credentials
+    for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"):
+        if not globals().get(name):
+            problems.append(f"Missing Telegram credential: {name} (set it in .env or Railway Variables).")
 
     if LOOKBACK_DAYS < 1:
-        problems.append("LOOKBACK_DAYS must be >= 1.")
+        problems.append("LOOKBACK_DAYS must be >= 1. (Recommended: 7-30 days)")
     if UPLOAD_CHUNK_SIZE % (256 * 1024) != 0 or UPLOAD_CHUNK_SIZE <= 0:
-        problems.append("UPLOAD_CHUNK_MB must be a positive multiple of 0.25.")
+        problems.append("UPLOAD_CHUNK_MB must be a positive multiple of 0.25. (Recommended: 8-16 MB)")
     if DEFAULT_FOLDER_KEY not in FOLDERS:
-        problems.append(f"DEFAULT_FOLDER_KEY {DEFAULT_FOLDER_KEY!r} is not in FOLDERS.")
+        problems.append(f"DEFAULT_FOLDER_KEY {DEFAULT_FOLDER_KEY!r} is not in FOLDERS. (Check config.py FOLDERS dict)")
     for key, folder in FOLDERS.items():
         if not folder.get("id") or not folder.get("name"):
-            problems.append(f"Folder {key} needs both 'name' and 'id'.")
+            problems.append(f"Folder {key} needs both 'name' and 'id'. (Check config.py FOLDERS dict)")
 
     if need_google:
         if GOOGLE_AUTH_MODE == "oauth":
@@ -307,6 +316,18 @@ def validate_config(need_google: bool = True) -> None:
         problems.append("MAX_RECORDING_SIZE_MB must be >= 0.")
     if MIN_RECORDING_SIZE_MB > 0 and MAX_RECORDING_SIZE_MB > 0 and MIN_RECORDING_SIZE_MB > MAX_RECORDING_SIZE_MB:
         problems.append("MIN_RECORDING_SIZE_MB cannot be greater than MAX_RECORDING_SIZE_MB.")
+
+    # Validate retry policy
+    if MAX_RETRIES < 0:
+        problems.append("MAX_RETRIES must be >= 0.")
+    if BACKOFF_BASE_SECONDS < 0:
+        problems.append("BACKOFF_BASE_SECONDS must be >= 0.")
+    if BACKOFF_MAX_SECONDS < 0:
+        problems.append("BACKOFF_MAX_SECONDS must be >= 0.")
+    if HTTP_TIMEOUT_SECONDS < 1:
+        problems.append("HTTP_TIMEOUT_SECONDS must be >= 1.")
+    if ZOOM_RATE_LIMIT <= 0:
+        problems.append("ZOOM_RATE_LIMIT must be > 0.")
 
     # Validate webhook configuration
     if TELEGRAM_USE_WEBHOOK and not TELEGRAM_WEBHOOK_URL:

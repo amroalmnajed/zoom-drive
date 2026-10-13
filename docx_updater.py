@@ -373,10 +373,10 @@ def _upload(drive, file_id: str, doc) -> None:
         # Update with conversion - this will convert Google Docs to binary .docx
         drive.files().update(
             fileId=file_id,
+            body={'mimeType': DOCX_MIME},
             media_body=media,
             supportsAllDrives=True,
-            fields="id",
-            mimeType=DOCX_MIME  # Force conversion to binary .docx
+            fields="id"
         ).execute()
     else:
         # Regular .docx file, just update

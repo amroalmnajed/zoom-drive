@@ -10,12 +10,14 @@ from utils import backoff_sleep, parse_zoom_time
 class RateLimiter:
     """Simple token bucket rate limiter for API calls."""
     
-    def __init__(self, calls_per_second: float = 10):
+    def __init__(self, calls_per_second: Optional[float] = None):
         """Initialize rate limiter.
         
         Args:
-            calls_per_second: Maximum API calls per second
+            calls_per_second: Maximum API calls per second (defaults to config.ZOOM_RATE_LIMIT)
         """
+        if calls_per_second is None:
+            calls_per_second = config.ZOOM_RATE_LIMIT
         self.min_interval = 1.0 / calls_per_second
         self.last_call = 0.0
     
@@ -36,7 +38,7 @@ class ZoomClient:
         self._session = requests.Session()
         self._token: Optional[str] = None
         self._expires_at: float = 0.0
-        self._rate_limiter = RateLimiter(calls_per_second=10)  # Zoom allows ~10 calls/sec
+        self._rate_limiter = RateLimiter()  # Uses config.ZOOM_RATE_LIMIT
 
     def _fetch_token(self) -> None:
         """Fetch OAuth token from Zoom API with retry logic."""

@@ -17,15 +17,6 @@ from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import httplib2
-# WORKAROUND: httplib2 incorrectly treats HTTP 308 "Resume Incomplete" responses as redirects.
-# Google Drive's resumable upload API uses 308 to indicate "more data needed", but httplib2
-# tries to follow it as a redirect, causing "RedirectMissingLocation" errors.
-# By removing 308 from REDIRECT_CODES, we prevent httplib2 from treating it as a redirect.
-# This is a known issue with httplib2; the proper fix would be to switch to a different HTTP library
-# or use the requests-based upload implementation (which we already do for the actual data transfer).
-httplib2.REDIRECT_CODES = {301, 302, 303, 307}
-
 import config
 from models import ZoomError, ApprovalRequest
 from utils import setup_logging, categorize, build_drive_filename, extract_video_metadata, generate_thumbnail, human_duration, human_size
