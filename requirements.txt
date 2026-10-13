@@ -3,6 +3,7 @@ google-api-python-client==2.154.0
 google-auth==2.35.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
+httplib2==0.22.0
 python-dotenv==1.0.0
 tzdata==2024.1
 flask==3.0.0

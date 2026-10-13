@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 import requests
 import urllib3
+import httplib2
 from google.auth.exceptions import RefreshError
-from google.auth.transport.requests import Request as GoogleAuthRequest, AuthorizedSession
+from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as UserCredentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -89,7 +90,7 @@ def _load_google_credentials(folder: Optional[dict] = None):
 
 def get_drive_service(folder: Optional[dict] = None):
     creds = _load_google_credentials(folder)
-    http = AuthorizedSession(creds)
+    http = creds.authorize(httplib2.Http())
     return build("drive", "v3", http=http, cache_discovery=False)
 
 def preflight_check_folders(drive) -> None:
