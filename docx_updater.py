@@ -345,13 +345,45 @@ def update_docx_in_drive(drive, folder_id: str, rec, web_view_link: str, session
     if not web_view_link:
         return {"status": "skipped", "detail": "no link to insert"}
 
-    query = (f"'{folder_id}' in parents and mimeType = '{DOCX_MIME}' and trashed = false")
-    files = drive.files().list(
-        q=query, fields="files(id, name)", pageSize=20,
-        supportsAllDrives=True, includeItemsFromAllDrives=True,
-    ).execute().get("files", [])
+    # Try both native .docx and Google Docs MIME types
+    docx_mime_types = [
+        DOCX_MIME,  # Native .docx
+        "application/vnd.google-apps.document",  # Google Docs
+    ]
+
+    files = []
+    for mime_type in docx_mime_types:
+        query = (f"'{folder_id}' in parents and mimeType = '{mime_type}' and trashed = false")
+        result = drive.files().list(
+            q=query, fields="files(id, name, mimeType)", pageSize=20,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute()
+        files.extend(result.get("files", []))
+
+    # Also try searching by name extension as fallback
     if not files:
-        raise ValueError("No .docx file found in the folder.")
+        query = (f"'{folder_id}' in parents and name contains '.docx' and trashed = false")
+        result = drive.files().list(
+            q=query, fields="files(id, name, mimeType)", pageSize=20,
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+        ).execute()
+        files.extend(result.get("files", []))
+
+    log.info("Found %d docx/Google Docs files in folder %s", len(files), folder_id)
+    for f in files:
+        log.info("  - %s (mimeType: %s)", f.get("name"), f.get("mimeType"))
+
+    # Filter out Google Docs (can't edit with python-docx)
+    native_docx_files = [f for f in files if f.get("mimeType") == DOCX_MIME]
+    log.info("Found %d native .docx files (excluding Google Docs)", len(native_docx_files))
+
+    if not native_docx_files:
+        if files:
+            raise ValueError(f"Found Google Docs but no native .docx files in folder {folder_id}. Google Docs cannot be edited automatically - please convert to .docx format.")
+        else:
+            raise ValueError(f"No .docx or Google Docs file found in folder {folder_id}.")
+
+    files = native_docx_files
 
     when = rec.local_start()
     last: Optional[dict] = None

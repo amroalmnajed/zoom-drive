@@ -253,10 +253,23 @@ class TelegramBot:
         msg_id = self.send_message("\n".join(lines), reply_markup={"inline_keyboard": keyboard})
         print(f"[Telegram] Batch selection sent. Waiting for selection...")
 
+        # Add timeout mechanism (5 minutes max)
+        start_time = time.time()
+        timeout_seconds = 300  # 5 minutes
+
         while True:
+            # Check timeout
+            if time.time() - start_time > timeout_seconds:
+                log.warning("Batch selection timed out after %d seconds", timeout_seconds)
+                self._batch_state = None
+                if msg_id:
+                    self.edit_message(msg_id, "⏰ <b>Batch selection timed out.</b> Please try again.")
+                return None
+
             try:
                 resp = requests.get(f"{self.base_url}/getUpdates", params={"offset": self.offset, "timeout": 30}, timeout=35)
                 if resp.status_code != 200:
+                    log.warning("Telegram API returned status %d, retrying...", resp.status_code)
                     time.sleep(2)
                     continue
                 updates = resp.json().get("result", [])
@@ -301,8 +314,14 @@ class TelegramBot:
                             return None
 
                         self._stash_stray(u)
+            except requests.exceptions.Timeout:
+                log.warning("Telegram polling timeout, retrying...")
+                continue
+            except requests.exceptions.RequestException as exc:
+                log.error("Telegram polling error: %s", exc)
+                time.sleep(2)
             except Exception as exc:
-                log.warning("Telegram polling retry: %s", exc)
+                log.error("Unexpected error in batch selection: %s", exc)
                 time.sleep(2)
 
     def _update_batch_keyboard(self, msg_id: int, recordings: list[Recording]) -> None:

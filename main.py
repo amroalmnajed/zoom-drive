@@ -126,7 +126,6 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False,
         if filter_from or filter_to:
             if not rec.start_time:
                 continue
-            from datetime import datetime
             if filter_from:
                 try:
                     from_date = datetime.strptime(filter_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -407,7 +406,6 @@ def _handle_backup(bot: "TelegramBot") -> None:
     """Backup state files (processed.json and undo_history.json) as a downloadable file."""
     import zipfile
     import io
-    from datetime import datetime, timezone
     
     # Create a zip file in memory
     zip_buffer = io.BytesIO()
@@ -492,12 +490,18 @@ def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
 
     bot.send_message(f"🔍 <b>Fetching recordings for batch selection</b> (last {days} days)...")
     try:
+        recordings = list(zoom.iter_recordings(days, fetch_participants=config.FETCH_PARTICIPANTS))
         recordings = sorted(
-            zoom.iter_recordings(days, fetch_participants=config.FETCH_PARTICIPANTS),
+            recordings,
             key=lambda r: r.start_time or datetime.min.replace(tzinfo=timezone.utc),
         )
+        log.info("Fetched %d recordings from Zoom", len(recordings))
     except ZoomError as exc:
         bot.send_message(f"❌ <b>Zoom error:</b> {exc}")
+        return
+    except Exception as exc:
+        log.error("Unexpected error fetching recordings: %s", exc)
+        bot.send_message(f"❌ <b>Error fetching recordings:</b> {exc}")
         return
 
     # Apply filters
@@ -559,12 +563,21 @@ def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
             reply_markup={"inline_keyboard": [[{"text": f"✅ Use S{auto_s}", "callback_data": f"batch_session:{auto_s}"}]]}
         )
 
-        # Wait for session number
+        # Wait for session number with timeout
         session_num = None
+        session_start = time.time()
+        session_timeout = 120  # 2 minutes
         while True:
+            # Check timeout
+            if time.time() - session_start > session_timeout:
+                log.warning("Session number input timed out")
+                bot.send_message("⏰ <b>Session number input timed out.</b> Please try again.")
+                return
+
             try:
                 resp = requests.get(f"{bot.base_url}/getUpdates", params={"offset": bot.offset, "timeout": 30}, timeout=35)
                 if resp.status_code != 200:
+                    log.warning("Telegram API returned status %d", resp.status_code)
                     time.sleep(2)
                     continue
                 updates = resp.json().get("result", [])
@@ -594,8 +607,14 @@ def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
                             break
                 if session_num:
                     break
+            except requests.exceptions.Timeout:
+                log.warning("Telegram polling timeout, retrying...")
+                continue
+            except requests.exceptions.RequestException as exc:
+                log.error("Telegram polling error: %s", exc)
+                time.sleep(2)
             except Exception as exc:
-                log.warning("Telegram polling retry: %s", exc)
+                log.error("Unexpected error in session number input: %s", exc)
                 time.sleep(2)
 
         if not session_num:
