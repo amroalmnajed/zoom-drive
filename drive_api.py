@@ -70,10 +70,14 @@ def _load_google_credentials(folder: Optional[dict] = None):
         except RefreshError as exc:
             log.warning("Token refresh failed: %s", exc)
 
-    flow = InstalledAppFlow.from_client_secrets_file(str(config.GOOGLE_OAUTH_CLIENT_FILE), scopes)
-    creds = flow.run_local_server(port=0)
-    token_path.write_text(creds.to_json(), encoding="utf-8")
-    return creds
+    # Don't try interactive auth in server environments
+    # On Railway/cloud, tokens should be provided via environment variables
+    raise RuntimeError(
+        f"Google Drive token not found or invalid for {token_path.name}. "
+        "Please ensure the token is provided via environment variable "
+        f"(e.g., {folder.get('token_env') if folder and 'token_env' in folder else 'GOOGLE_TOKEN_JSON'}) "
+        "or run 'python auth_all.py' locally to generate the token file."
+    )
 
 def get_drive_service(folder: Optional[dict] = None):
     creds = _load_google_credentials(folder)

@@ -200,13 +200,14 @@ class TelegramBot:
             pass
 
     def _stash_stray(self, u: dict) -> None:
-        """An Undo tap that arrives while a run is waiting for something else."""
+        """An Undo tap that arrived while a run is waiting for something else."""
         cb = u.get("callback_query")
         if not cb or str(cb.get("from", {}).get("id")) != self.chat_id:
             return
+        # Don't stash undo callbacks - process them immediately
+        # They don't interfere with the current run
         if str(cb.get("data", "")).startswith("undo"):
-            self._deferred.append(u)
-            self.answer_callback(cb["id"], "Got it - I'll handle this when the current run is done.")
+            return  # Let it be processed immediately
 
     def get_batch_selection(self, recordings: list[Recording]) -> Optional[BatchRequest]:
         """Display recordings with checkboxes for batch selection.
@@ -582,21 +583,7 @@ class TelegramBot:
             ("undo_no", id)          cancelled
             ("restore", (file_id, filename))  document upload for restore
         """
-        self.send_message(
-            "🤖 <b>Bot is idle and listening.</b>\n\n"
-            "Send a command to get started:\n"
-            "• /run — fetch last 7 days\n"
-            "• /run 30 — fetch last 30 days\n"
-            "• /run --dry — dry-run (no uploads)\n"
-            "• /batch — select multiple recordings for batch upload/skip\n"
-            "• /undo — undo a recent upload + docx link\n"
-            "• /status — show processed recordings\n"
-            "• /stats — detailed statistics\n"
-            "• /reset — clear processed history\n"
-            "• /backup — download state backup\n"
-            "• /restore — upload backup file to restore state\n"
-            "• /help — show this message"
-        )
+        # Don't send idle message - it's sent at startup in bot_mode()
         log.debug("Bot idle — waiting for /run command on Telegram.")
 
         while True:
