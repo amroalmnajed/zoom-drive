@@ -128,7 +128,10 @@ def _table_columns(table, layout: _Cols) -> tuple[Optional[_Cols], int]:
 
 def _session_matches(text: str, session_num: int) -> bool:
     m = re.fullmatch(r"s?\s*0*(\d+)", (text or "").strip(), re.IGNORECASE)
-    return bool(m) and int(m.group(1)) == session_num
+    matches = bool(m) and int(m.group(1)) == session_num
+    log.debug("Session matching: text='%s', session_num=%d, match=%s, extracted=%s",
+              text, session_num, matches, int(m.group(1)) if m else None)
+    return matches
 
 
 def _date_matches(text: str, when: Optional[datetime]) -> bool:
@@ -139,9 +142,13 @@ def _date_matches(text: str, when: Optional[datetime]) -> bool:
     if len(nums) < 2:
         return False
     a, b = nums[0], nums[1]
-    if (a, b) not in ((when.day, when.month), (when.month, when.day)):
+    matches = (a, b) in ((when.day, when.month), (when.month, when.day))
+    log.debug("Date matching: text='%s', nums=%s, when=%s, matches=%s", text, nums, when, matches)
+    if not matches:
         return False
     if len(nums) >= 3 and nums[2] % 100 != when.year % 100:
+        log.debug("Year mismatch: nums[2]=%s %% 100 = %s != when.year %% 100 = %s",
+                  nums[2], nums[2] % 100, when.year % 100)
         return False
     return True
 
@@ -163,15 +170,20 @@ def _find_row(doc, session_num: int, when: Optional[datetime]):
     Returns (link_cell, label, already_linked_cell_or_None).
     """
     layout = _document_layout(doc)
+    log.info("Document layout: session_col=%s, date_col=%s, link_col=%s", layout.session, layout.date, layout.link)
     session_hits, date_hits = [], []
 
     for ti, table in enumerate(doc.tables, start=1):
         cols, start = _table_columns(table, layout)
         if not cols:
+            log.debug("Table %d: no valid columns, skipping", ti)
             continue
+        log.info("Table %d: cols.session=%s, cols.date=%s, cols.link=%s, start_row=%d, total_rows=%d",
+                 ti, cols.session, cols.date, cols.link, start, len(table.rows))
         for ri in range(start, len(table.rows)):
             cells = table.rows[ri].cells
             if cols.link >= len(cells):
+                log.debug("Table %d row %d: link column %d out of range (has %d cells)", ti, ri+1, cols.link, len(cells))
                 continue
             link_cell = cells[cols.link]
             label = f"table {ti}, row {ri + 1}"
@@ -181,13 +193,21 @@ def _find_row(doc, session_num: int, when: Optional[datetime]):
 
             if has_session_value:
                 if _session_matches(sess_text, session_num):
+                    log.info("Found session match in %s: session_text='%s'", label, sess_text)
                     session_hits.append((link_cell, label))
+                else:
+                    log.debug("Session mismatch in %s: session_text='%s' != %d", label, sess_text, session_num)
                 # A row with a *different* session number is never our row,
                 # no matter what its date looks like.
             elif cols.date is not None and cols.date < len(cells):
-                if _date_matches(cells[cols.date].text, when):
+                date_text = cells[cols.date].text
+                if _date_matches(date_text, when):
+                    log.info("Found date match in %s: date_text='%s'", label, date_text)
                     date_hits.append((link_cell, label))
+                else:
+                    log.debug("Date mismatch in %s: date_text='%s' != %s", label, date_text, when)
 
+    log.info("Session hits: %d, Date hits: %d", len(session_hits), len(date_hits))
     hits = session_hits or date_hits
     if not hits:
         return None, "", None

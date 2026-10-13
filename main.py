@@ -28,7 +28,7 @@ httplib2.REDIRECT_CODES = {301, 302, 303, 307}
 
 import config
 from models import ZoomError, ApprovalRequest
-from utils import setup_logging, categorize, build_drive_filename, extract_video_metadata, generate_thumbnail
+from utils import setup_logging, categorize, build_drive_filename, extract_video_metadata, generate_thumbnail, human_duration, human_size
 
 # Flask app for webhook mode (lazy import to avoid issues if not needed)
 _flask_app = None
