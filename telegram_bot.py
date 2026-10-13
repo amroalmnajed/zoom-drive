@@ -223,6 +223,10 @@ class TelegramBot:
         max_batch = config.MAX_BATCH_SIZE if hasattr(config, 'MAX_BATCH_SIZE') else 10
         display_recordings = recordings[:max_batch]
 
+        # Initialize batch state if not exists (must be before building keyboard)
+        if self._batch_state is None:
+            self._batch_state = BatchRequest(recordings=display_recordings, selected_keys=set())
+
         lines = [
             f"📋 <b>Batch Selection</b> ({len(display_recordings)} recordings)",
             "",
@@ -245,10 +249,6 @@ class TelegramBot:
         keyboard.append([
             {"text": "🛑 Cancel", "callback_data": "batch_action:cancel"},
         ])
-
-        # Initialize batch state if not exists
-        if self._batch_state is None:
-            self._batch_state = BatchRequest(recordings=display_recordings, selected_keys=set())
 
         msg_id = self.send_message("\n".join(lines), reply_markup={"inline_keyboard": keyboard})
         print(f"[Telegram] Batch selection sent. Waiting for selection...")
@@ -283,6 +283,10 @@ class TelegramBot:
                         self.answer_callback(cb["id"], "Processing...")
 
                         if data.startswith("batch_toggle:"):
+                            if self._batch_state is None:
+                                log.warning("batch_toggle received but _batch_state is None")
+                                self.answer_callback(cb["id"], "Error: Batch state lost. Please try /batch again.")
+                                continue
                             key = data.split(":")[1]
                             if key in self._batch_state.selected_keys:
                                 self._batch_state.selected_keys.remove(key)
@@ -293,6 +297,10 @@ class TelegramBot:
                             continue
 
                         if data == "batch_action:upload":
+                            if self._batch_state is None:
+                                log.warning("batch_action:upload received but _batch_state is None")
+                                self.answer_callback(cb["id"], "Error: Batch state lost. Please try /batch again.")
+                                continue
                             if not self._batch_state.selected_keys:
                                 self.answer_callback(cb["id"], "No recordings selected!")
                                 continue
@@ -301,6 +309,10 @@ class TelegramBot:
                             return self._batch_state
 
                         if data == "batch_action:skip":
+                            if self._batch_state is None:
+                                log.warning("batch_action:skip received but _batch_state is None")
+                                self.answer_callback(cb["id"], "Error: Batch state lost. Please try /batch again.")
+                                continue
                             if not self._batch_state.selected_keys:
                                 self.answer_callback(cb["id"], "No recordings selected!")
                                 continue
@@ -326,6 +338,10 @@ class TelegramBot:
 
     def _update_batch_keyboard(self, msg_id: int, recordings: list[Recording]) -> None:
         """Update the batch selection keyboard with current checkbox states."""
+        if self._batch_state is None:
+            log.warning("_update_batch_keyboard called with None _batch_state")
+            return
+
         keyboard = []
         for i, rec in enumerate(recordings):
             key = rec.key
