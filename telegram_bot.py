@@ -363,6 +363,9 @@ class TelegramBot:
                     self.answer_callback(cb["id"])
                     return cmd, data[len(prefix):]
             # Handle multi-folder callbacks
+            if data.startswith("multi_rec:"):
+                self.answer_callback(cb["id"])
+                return "multi_rec_select", data.split(":", 1)[1]
             if data.startswith("multi_folder:"):
                 self.answer_callback(cb["id"])
                 return "multi_toggle", data.split(":")[1]
@@ -414,7 +417,10 @@ class TelegramBot:
         if cmd == "undo":
             return "undo_list", ""
         if cmd == "multi":
-            return "multi", ""
+            days = config.LOOKBACK_DAYS
+            if len(parts) > 1 and parts[1].isdigit():
+                days = int(parts[1])
+            return "multi", days
         self.send_message(
             f"❓ Unknown command <code>{cmd}</code>.\n"
             "Try /run, /run 30, /run --dry, /multi, /undo, /status, /stats, /reset, /backup, or /help."

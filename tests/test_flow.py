@@ -1,7 +1,7 @@
 import io, sys, types, importlib.abc, importlib.machinery, os, json, tempfile
 from unittest.mock import MagicMock
 from datetime import datetime, timezone
-sys.path.insert(0, "/home/claude/zd/zoom-drive")
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 
 # --- stub libs that aren't installed in this sandbox ---
 class HttpError(Exception):
@@ -24,16 +24,31 @@ class _Stub(importlib.abc.MetaPathFinder, importlib.abc.Loader):
             m.MediaIoBaseUpload = Up
         return m
     def exec_module(self, m): pass
-sys.meta_path.insert(0, _Stub())
+try:
+    import googleapiclient  # noqa: F401
+except ImportError:
+    sys.meta_path.insert(0, _Stub())
 
 import docx
 import config
 tmp = tempfile.mkdtemp()
 config.STATE_FILE = __import__("pathlib").Path(tmp) / "processed.json"
 config.UNDO_FILE = __import__("pathlib").Path(tmp) / "undo.json"
+import googleapiclient.http as ghttp
 import main, docx_updater
 from undo_store import UndoStore
 from state import StateStore
+
+class _Down:
+    def __init__(self, fh, req):
+        self.fh, self.req = fh, req
+    def next_chunk(self):
+        data = getattr(self.req, "data", b"")
+        if data:
+            self.fh.write(data)
+        return None, True
+
+ghttp.MediaIoBaseDownload = _Down
 
 # --- fake Drive holding one docx and one video ---
 def make_docx():
@@ -47,10 +62,23 @@ class FakeDrive:
     def __init__(self): self.docx = make_docx(); self.video_trashed = False; self.updates = []
     def files(self): return self
     def list(self, **kw): return types.SimpleNamespace(execute=lambda: {"files": [{"id": "DOCX1", "name": "Main_Revision.docx"}]})
+    def get(self, fileId, **kw):
+        return types.SimpleNamespace(execute=lambda: {
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        })
     def get_media(self, fileId, **kw): return types.SimpleNamespace(data=self.docx)
     def update(self, fileId, media_body=None, body=None, **kw):
+        def _media_bytes(media):
+            data = getattr(media, "data", None)
+            if data is not None:
+                return data
+            fd = getattr(media, "_fd", None)
+            if fd is not None:
+                fd.seek(0)
+                return fd.read()
+            return media.getbytes()
         def ex():
-            if media_body is not None: self.docx = media_body.data
+            if media_body is not None: self.docx = _media_bytes(media_body)
             if body and body.get("trashed"): self.video_trashed = True
             return {}
         return types.SimpleNamespace(execute=ex)

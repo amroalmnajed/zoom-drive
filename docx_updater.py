@@ -340,7 +340,8 @@ def _download(drive, file_id: str) -> io.BytesIO:
     # Google Docs files need to be exported
     if mime_type.startswith("application/vnd.google-apps"):
         log.info("File is a Google Docs file (mimeType=%s), exporting as .docx", mime_type)
-        request = drive.files().export(fileId=file_id, mimeType=DOCX_MIME, supportsAllDrives=True)
+        # export() does not accept supportsAllDrives; shared-drive files still export if the caller has access.
+        request = drive.files().export(fileId=file_id, mimeType=DOCX_MIME)
     else:
         # Binary file, download directly
         request = drive.files().get_media(fileId=file_id, supportsAllDrives=True)
