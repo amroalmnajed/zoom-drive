@@ -166,9 +166,14 @@ python main.py --bot
 
 - `/run` - Process last 7 days
 - `/run 30` - Process last N days
+- `/run --dry` - Dry run (no uploads)
+- `/multi` - Upload same recording to multiple folders
 - `/undo` - Undo a recent upload + docx link
 - `/status` - Show processed recordings count
+- `/stats` - Detailed statistics
 - `/reset` - Clear processed history
+- `/backup` - Download state backup
+- `/restore` - Upload backup file to restore state
 - `/help` - Show available commands
 
 ### Railway Deployment

@@ -27,7 +27,7 @@ import httplib2
 httplib2.REDIRECT_CODES = {301, 302, 303, 307}
 
 import config
-from models import ZoomError, ApprovalRequest, BatchRequest
+from models import ZoomError, ApprovalRequest
 from utils import setup_logging, categorize, build_drive_filename, extract_video_metadata, generate_thumbnail
 
 # Flask app for webhook mode (lazy import to avoid issues if not needed)
@@ -248,8 +248,10 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False,
                 if link:
                     try:
                         from docx_updater import update_docx_in_drive
+                        log.info("Attempting to update docx in folder %s for session %d", folder['name'], session_num)
                         docx_info = update_docx_in_drive(drive, folder["id"], rec, link, session_num)
                         status = docx_info.get("status")
+                        log.info("Docx update result: status=%s, detail=%s", status, docx_info.get('detail'))
                         if status == "updated":
                             bot.send_message(f"📝 <b>Docx updated:</b> link added for session {session_num} "
                                              f"({docx_info.get('detail', '')}).")
@@ -258,8 +260,10 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False,
                         else:
                             bot.send_message(f"⚠️ <b>Docx not updated:</b> {docx_info.get('detail')}")
                     except Exception as docx_exc:
-                        log.error("Docx update failed: %s", docx_exc)
-                        bot.send_message(f"⚠️ <b>Docx update failed:</b> {docx_exc}")
+                        log.error("Docx update failed for folder %s: %s", folder['name'], docx_exc, exc_info=True)
+                        bot.send_message(f"⚠️ <b>Docx update failed in {folder['name']}:</b> {docx_exc}")
+                else:
+                    log.warning("No webViewLink in upload result, skipping docx update for folder %s", folder['name'])
 
                 # ── remember how to undo this ────────────────────────────
                 docx_updated = docx_info.get("status") == "updated"
@@ -482,18 +486,18 @@ def _describe(e: dict) -> str:
     return "\n".join(f"• {p}" for p in parts)
 
 
-def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
-                  min_size: Optional[int] = None, max_size: Optional[int] = None) -> None:
-    """Handle batch mode: select multiple recordings for batch upload/skip."""
+def _handle_multi(bot: "TelegramBot", dry_run: bool = False) -> None:
+    """Handle multi-folder upload: upload same recording to multiple folders."""
     state = StateStore(config.STATE_FILE)
     zoom = ZoomClient()
 
-    bot.send_message(f"🔍 <b>Fetching recordings for batch selection</b> (last {days} days)...")
+    bot.send_message("🔍 <b>Fetching most recent recording</b>...")
     try:
-        recordings = list(zoom.iter_recordings(days, fetch_participants=config.FETCH_PARTICIPANTS))
+        recordings = list(zoom.iter_recordings(1, fetch_participants=config.FETCH_PARTICIPANTS))
         recordings = sorted(
             recordings,
             key=lambda r: r.start_time or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True
         )
         log.info("Fetched %d recordings from Zoom", len(recordings))
     except ZoomError as exc:
@@ -504,44 +508,124 @@ def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
         bot.send_message(f"❌ <b>Error fetching recordings:</b> {exc}")
         return
 
-    # Apply filters
-    filtered_recordings = []
-    for rec in recordings:
-        if min_size or max_size:
-            if not rec.file_size:
-                continue
-            size_mb = rec.file_size / (1024 * 1024)
-            if min_size and size_mb < min_size:
-                continue
-            if max_size and size_mb > max_size:
-                continue
-        filtered_recordings.append(rec)
-
-    pending = [r for r in filtered_recordings if not state.should_hide(r.key)]
-
-    if not pending:
-        bot.send_message("✅ <b>No pending recordings</b> for batch selection.")
+    if not recordings:
+        bot.send_message("✅ <b>No recordings found</b> in the last day.")
         return
 
-    # Get batch selection from user
-    batch_req = bot.get_batch_selection(pending)
-    if not batch_req or not batch_req.action:
+    # Get the most recent recording
+    rec = recordings[0]
+
+    # Display recording info
+    start = rec.local_start()
+    start_str = f"{start:%Y-%m-%d %H:%M}" if start else "unknown"
+    lines = [
+        f"📹 <b>Most Recent Recording</b>",
+        "",
+        f"<b>Title:</b> {rec.topic}",
+        f"<b>Host:</b> {rec.host_email}",
+        f"<b>Started:</b> {start_str}",
+        f"<b>Duration:</b> {human_duration(rec.duration_min)} | <b>Size:</b> {human_size(rec.file_size)}",
+        "",
+        "<b>Select folders to upload to:</b>",
+    ]
+
+    # Build folder selection keyboard
+    keyboard = []
+    for key, folder in config.FOLDERS.items():
+        keyboard.append([{"text": f"{key}) {folder['name']} ({folder['code']})", "callback_data": f"multi_folder:{key}"}])
+
+    keyboard.append([
+        {"text": "✅ Upload to Selected", "callback_data": "multi_action:upload"},
+        {"text": "🛑 Cancel", "callback_data": "multi_action:cancel"},
+    ])
+
+    msg_id = bot.send_message("\n".join(lines), reply_markup={"inline_keyboard": keyboard})
+
+    # Track selected folders
+    selected_folders = set()
+
+    # Wait for folder selection with timeout
+    start_time = time.time()
+    timeout_seconds = 300  # 5 minutes
+
+    while True:
+        if time.time() - start_time > timeout_seconds:
+            log.warning("Multi-folder selection timed out")
+            bot.send_message("⏰ <b>Selection timed out.</b> Please try again.")
+            return
+
+        try:
+            resp = requests.get(f"{bot.base_url}/getUpdates", params={"offset": bot.offset, "timeout": 30}, timeout=35)
+            if resp.status_code != 200:
+                log.warning("Telegram API returned status %d", resp.status_code)
+                time.sleep(2)
+                continue
+            updates = resp.json().get("result", [])
+            for u in updates:
+                bot.offset = u["update_id"] + 1
+                if "callback_query" in u:
+                    cb = u["callback_query"]
+                    if str(cb.get("from", {}).get("id")) != bot.chat_id:
+                        continue
+                    data = cb.get("data", "")
+                    bot.answer_callback(cb["id"], "Processing...")
+
+                    if data.startswith("multi_folder:"):
+                        folder_key = data.split(":")[1]
+                        if folder_key in selected_folders:
+                            selected_folders.remove(folder_key)
+                        else:
+                            selected_folders.add(folder_key)
+                        # Update keyboard
+                        new_keyboard = []
+                        for key, folder in config.FOLDERS.items():
+                            checkbox = "☑" if key in selected_folders else "☐"
+                            new_keyboard.append([{"text": f"{checkbox} {key}) {folder['name']} ({folder['code']})", "callback_data": f"multi_folder:{key}"}])
+                        new_keyboard.append([
+                            {"text": "✅ Upload to Selected", "callback_data": "multi_action:upload"},
+                            {"text": "🛑 Cancel", "callback_data": "multi_action:cancel"},
+                        ])
+                        try:
+                            payload = {"chat_id": bot.chat_id, "message_id": msg_id, "reply_markup": json.dumps({"inline_keyboard": new_keyboard})}
+                            requests.post(f"{bot.base_url}/editMessageReplyMarkup", json=payload, timeout=10)
+                        except Exception as exc:
+                            log.error("Failed to update keyboard: %s", exc)
+                        continue
+
+                    if data == "multi_action:upload":
+                        if not selected_folders:
+                            bot.answer_callback(cb["id"], "No folders selected!")
+                            continue
+                        if msg_id:
+                            bot.edit_message(msg_id, f"✅ <b>Selected {len(selected_folders)} folder(s)</b>")
+                        break
+
+                    if data == "multi_action:cancel":
+                        bot.send_message("🛑 <b>Multi-folder upload cancelled.</b>")
+                        return
+
+            if selected_folders:
+                break
+        except requests.exceptions.Timeout:
+            log.warning("Telegram polling timeout, retrying...")
+            continue
+        except requests.exceptions.RequestException as exc:
+            log.error("Telegram polling error: %s", exc)
+            time.sleep(2)
+        except Exception as exc:
+            log.error("Unexpected error in multi-folder selection: %s", exc)
+            time.sleep(2)
+
+    if not selected_folders:
         return
 
-    # Get selected recordings
-    selected_recordings = [r for r in pending if r.key in batch_req.selected_keys]
+    # Upload to each selected folder
+    uploaded = failed = 0
+    for folder_key in selected_folders:
+        if _shutdown_requested:
+            bot.send_message("🛑 <b>Multi-folder upload interrupted by shutdown signal.</b>")
+            break
 
-    if batch_req.action == "skip":
-        for rec in selected_recordings:
-            if not dry_run:
-                state.mark(rec.key, "skipped", topic=rec.topic)
-        bot.send_message(f"⏭ <b>Batch skip complete:</b> {len(selected_recordings)} recordings marked as skipped.")
-        return
-
-    if batch_req.action == "upload":
-        # For now, use the default folder for batch uploads
-        # TODO: Add folder selection UI in future version
-        folder_key = config.DEFAULT_FOLDER_KEY
         folder = config.FOLDERS[folder_key]
         drive = None
         if not dry_run:
@@ -549,130 +633,69 @@ def _handle_batch(bot: "TelegramBot", days: int, dry_run: bool = False,
                 drive = get_drive_service(folder)
             except Exception as exc:
                 bot.send_message(f"❌ <b>Google Drive auth failed for {folder['name']}:</b> {exc}")
-                return
-
-        # Get session number for batch
-        auto_s = get_next_session_number(drive, folder["id"])
-        code = folder.get("code", "Course")
-
-        bot.send_message(
-            f"📁 <b>Target Folder:</b> {folder['name']} ({code})\n"
-            f"<b>Auto-detected Session:</b> S{auto_s}\n"
-            f"<b>Uploads:</b> {len(selected_recordings)} recordings\n\n"
-            f"Reply with session number (e.g. 26) or click to use S{auto_s}",
-            reply_markup={"inline_keyboard": [[{"text": f"✅ Use S{auto_s}", "callback_data": f"batch_session:{auto_s}"}]]}
-        )
-
-        # Wait for session number with timeout
-        session_num = None
-        session_start = time.time()
-        session_timeout = 120  # 2 minutes
-        while True:
-            # Check timeout
-            if time.time() - session_start > session_timeout:
-                log.warning("Session number input timed out")
-                bot.send_message("⏰ <b>Session number input timed out.</b> Please try again.")
-                return
-
-            try:
-                resp = requests.get(f"{bot.base_url}/getUpdates", params={"offset": bot.offset, "timeout": 30}, timeout=35)
-                if resp.status_code != 200:
-                    log.warning("Telegram API returned status %d", resp.status_code)
-                    time.sleep(2)
-                    continue
-                updates = resp.json().get("result", [])
-                for u in updates:
-                    bot.offset = u["update_id"] + 1
-                    if "callback_query" in u:
-                        cb = u["callback_query"]
-                        if str(cb.get("from", {}).get("id")) != bot.chat_id:
-                            continue
-                        data = cb.get("data", "")
-                        if data.startswith("batch_session:"):
-                            session_num = int(data.split(":")[1])
-                            bot.answer_callback(cb["id"], f"Session S{session_num} confirmed!")
-                            break
-                    elif "message" in u:
-                        msg = u["message"]
-                        if str(msg.get("from", {}).get("id")) != bot.chat_id:
-                            continue
-                        txt = msg.get("text", "").strip().lower()
-                        if txt.startswith("s"):
-                            txt = txt[1:]
-                        if txt.isdigit():
-                            session_num = int(txt)
-                            if session_num < 1 or session_num > 999:
-                                bot.send_message(f"❌ Invalid session number: {session_num}. Please enter a number between 1 and 999.")
-                                continue
-                            break
-                if session_num:
-                    break
-            except requests.exceptions.Timeout:
-                log.warning("Telegram polling timeout, retrying...")
-                continue
-            except requests.exceptions.RequestException as exc:
-                log.error("Telegram polling error: %s", exc)
-                time.sleep(2)
-            except Exception as exc:
-                log.error("Unexpected error in session number input: %s", exc)
-                time.sleep(2)
-
-        if not session_num:
-            return
-
-        # Process batch uploads
-        uploaded = failed = 0
-        for i, rec in enumerate(selected_recordings, start=1):
-            if _shutdown_requested:
-                bot.send_message("🛑 <b>Batch upload interrupted by shutdown signal.</b>")
-                break
-
-            final_name = build_drive_filename(rec, code, session_num + i - 1)
-
-            if dry_run:
-                bot.send_message(f"🧪 <b>[dry-run]</b> Would upload <code>{final_name}</code>")
-                uploaded += 1
-                continue
-
-            bot.send_message(f"🚀 <b>Uploading {i}/{len(selected_recordings)}:</b> <code>{final_name}</code>")
-            try:
-                result = upload_recording(drive, zoom, rec, folder, session_num + i - 1, bot=bot)
-                result = result or {}
-                state.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],
-                           drive_file_id=result.get("id"))
-                uploaded += 1
-                bot.send_message(f"✅ <b>Uploaded:</b> <code>{final_name}</code>")
-
-                # Update docx if needed
-                link = result.get("webViewLink")
-                if link:
-                    try:
-                        from docx_updater import update_docx_in_drive
-                        docx_info = update_docx_in_drive(drive, folder["id"], rec, link, session_num + i - 1)
-                        if docx_info.get("status") == "updated":
-                            bot.send_message(f"📝 <b>Docx updated:</b> session {session_num + i - 1}")
-                    except Exception as docx_exc:
-                        log.error("Docx update failed: %s", docx_exc)
-            except Exception as exc:
                 failed += 1
-                error_context = {
-                    "recording_id": rec.key,
-                    "topic": rec.topic,
-                    "folder": folder["name"],
-                    "session_num": session_num + i - 1,
-                    "filename": final_name,
-                }
-                log_error_with_traceback(exc, error_context)
-                state.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
-                alert = format_error_notification(exc, error_context)
-                bot.send_message(alert)
+                continue
 
-        emoji = "✅" if not failed else "⚠️"
-        bot.send_message(
-            f"{emoji} <b>Batch upload complete.</b>\n\n"
-            f"• Uploaded: <b>{uploaded}</b>\n"
-            f"• Failed: <b>{failed}</b>"
-        )
+        auto_s = get_next_session_number(drive, folder["id"])
+        session_num = bot.get_session_number(rec, folder, auto_s)
+        code = folder.get("code", "Course")
+        final_name = build_drive_filename(rec, code, session_num)
+
+        if dry_run:
+            bot.send_message(f"🧪 <b>[dry-run]</b> Would upload <code>{final_name}</code> to <b>{folder['name']}</b>")
+            uploaded += 1
+            continue
+
+        bot.send_message(f"🚀 <b>Uploading to {folder['name']}:</b> <code>{final_name}</code>")
+        try:
+            result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot)
+            result = result or {}
+            state.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],
+                       drive_file_id=result.get("id"))
+            uploaded += 1
+            bot.send_message(f"✅ <b>Uploaded to {folder['name']}:</b> <code>{final_name}</code>")
+
+            # Update docx if needed
+            link = result.get("webViewLink")
+            if link:
+                try:
+                    from docx_updater import update_docx_in_drive
+                    log.info("Attempting to update docx in folder %s for session %d", folder['name'], session_num)
+                    docx_info = update_docx_in_drive(drive, folder["id"], rec, link, session_num)
+                    status = docx_info.get("status")
+                    log.info("Docx update result for %s: status=%s, detail=%s", folder['name'], status, docx_info.get('detail'))
+                    if status == "updated":
+                        bot.send_message(f"📝 <b>Docx updated in {folder['name']}:</b> session {session_num} "
+                                         f"({docx_info.get('detail', '')}).")
+                    elif status == "already_linked":
+                        bot.send_message(f"ℹ️ <b>Docx not changed in {folder['name']}:</b> {docx_info.get('detail')}.")
+                    else:
+                        bot.send_message(f"⚠️ <b>Docx not updated in {folder['name']}:</b> {docx_info.get('detail')}")
+                except Exception as docx_exc:
+                    log.error("Docx update failed for folder %s: %s", folder['name'], docx_exc, exc_info=True)
+                    bot.send_message(f"⚠️ <b>Docx update failed in {folder['name']}:</b> {docx_exc}")
+            else:
+                log.warning("No webViewLink in upload result, skipping docx update for folder %s", folder['name'])
+        except Exception as exc:
+            failed += 1
+            error_context = {
+                "recording_id": rec.key,
+                "topic": rec.topic,
+                "folder": folder["name"],
+                "session_num": session_num,
+                "filename": final_name,
+            }
+            log_error_with_traceback(exc, error_context)
+            state.mark(rec.key, "failed", topic=rec.topic, folder=folder["name"], error=str(exc))
+            alert = format_error_notification(exc, error_context)
+            bot.send_message(alert)
+
+    emoji = "✅" if not failed else "⚠️"
+    bot.send_message(
+        f"{emoji} <b>Multi-folder upload complete.</b>\n\n"
+        f"• Uploaded to: <b>{uploaded}</b> folder(s)\n"
+        f"• Failed: <b>{failed}</b> folder(s)"
+    )
 
 
 def _create_webhook_app(bot: "TelegramBot"):
@@ -865,7 +888,7 @@ def bot_mode(dry_run: bool = False) -> None:
         "• /run — process last 7 days\n"
         "• /run 30 — process last 30 days\n"
         "• /run --dry — dry-run (no uploads)\n"
-        "• /batch — select multiple recordings for batch upload/skip\n"
+        "• /multi — upload same recording to multiple folders\n"
         "• /undo — undo a recent upload + docx link\n"
         "• /status — show processed count\n"
         "• /stats — detailed statistics\n"
@@ -974,8 +997,8 @@ def bot_mode(dry_run: bool = False) -> None:
             elif cmd == "undo_no":
                 bot.send_message("👍 Cancelled — nothing was changed.")
 
-            elif cmd == "batch":
-                _handle_batch(bot, days, dry_run=dry_run, min_size=min_size, max_size=max_size)
+            elif cmd == "multi":
+                _handle_multi(bot, dry_run=dry_run)
 
             elif cmd == "status":
                 _handle_status(bot)
@@ -1000,7 +1023,7 @@ def bot_mode(dry_run: bool = False) -> None:
                     "• /run — fetch & process last 7 days\n"
                     "• /run 30 — fetch & process last N days\n"
                     "• /run --dry — dry-run (no uploads)\n"
-                    "• /batch — select multiple recordings for batch upload/skip\n"
+                    "• /multi — upload same recording to multiple folders\n"
                     "• /undo — undo a recent upload + docx link\n"
                     "• /status — how many recordings processed\n"
                     "• /stats — detailed statistics\n"

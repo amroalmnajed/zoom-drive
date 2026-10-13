@@ -232,10 +232,6 @@ ENABLE_THUMBNAILS = os.getenv("ENABLE_THUMBNAILS", "true").lower() == "true"
 # Time offset in seconds to capture thumbnail frame (default: 2.0)
 THUMBNAIL_TIME_OFFSET = float(os.getenv("THUMBNAIL_TIME_OFFSET", "2.0"))
 
-# Batch mode settings
-# Maximum number of recordings to display in batch selection
-MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "10"))
-
 # Telegram webhook settings
 # Set to True to use webhooks instead of polling (requires public HTTPS endpoint)
 TELEGRAM_USE_WEBHOOK = os.getenv("TELEGRAM_USE_WEBHOOK", "false").lower() == "true"
@@ -317,8 +313,6 @@ def validate_config(need_google: bool = True) -> None:
         problems.append("TELEGRAM_USE_WEBHOOK is True but TELEGRAM_WEBHOOK_URL is not set.")
     if WEBHOOK_PORT not in (80, 88, 443, 8443):
         problems.append("WEBHOOK_PORT must be one of: 80, 88, 443, 8443 (Telegram requirement).")
-    if MAX_BATCH_SIZE < 1:
-        problems.append("MAX_BATCH_SIZE must be >= 1.")
     if THUMBNAIL_TIME_OFFSET < 0:
         problems.append("THUMBNAIL_TIME_OFFSET must be >= 0.")
 

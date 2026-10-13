@@ -7,7 +7,7 @@ from typing import Optional, Tuple
 import requests
 
 import config
-from models import Recording, ApprovalRequest, ApprovalDecision, BatchRequest
+from models import Recording, ApprovalRequest, ApprovalDecision
 from utils import human_duration, human_size
 
 log = logging.getLogger("zoom_to_drive")
@@ -20,7 +20,6 @@ class TelegramBot:
         self.offset = 0
         self._deferred: list[dict] = []   # undo taps that arrived mid-run
         self._queue: list[tuple] = []     # interpreted commands waiting to be returned
-        self._batch_state: Optional[BatchRequest] = None  # Track batch selection state
         self._flush_old_updates()
 
     def _flush_old_updates(self) -> None:
@@ -209,161 +208,6 @@ class TelegramBot:
         if str(cb.get("data", "")).startswith("undo"):
             return  # Let it be processed immediately
 
-    def get_batch_selection(self, recordings: list[Recording]) -> Optional[BatchRequest]:
-        """Display recordings with checkboxes for batch selection.
-
-        Args:
-            recordings: List of pending recordings to display
-
-        Returns:
-            BatchRequest with selected recordings and action, or None if cancelled
-        """
-        from typing import Optional
-
-        # Limit batch size to prevent message overflow
-        max_batch = config.MAX_BATCH_SIZE if hasattr(config, 'MAX_BATCH_SIZE') else 10
-        display_recordings = recordings[:max_batch]
-
-        # Initialize batch state if not exists (must be before building keyboard)
-        if self._batch_state is None:
-            self._batch_state = BatchRequest(recordings=display_recordings, selected_keys=set())
-
-        lines = [
-            f"📋 <b>Batch Selection</b> ({len(display_recordings)} recordings)",
-            "",
-            "Select recordings to process, then choose an action:",
-        ]
-
-        # Build inline keyboard with checkboxes
-        keyboard = []
-        for i, rec in enumerate(display_recordings):
-            key = rec.key
-            checkbox = "☐" if key not in self._batch_state.selected_keys else "☑"
-            topic_short = rec.topic[:30] + "..." if len(rec.topic) > 30 else rec.topic
-            keyboard.append([{"text": f"{checkbox} {i+1}. {topic_short}", "callback_data": f"batch_toggle:{key}"}])
-
-        # Add action buttons
-        keyboard.append([
-            {"text": "✅ Upload Selected", "callback_data": "batch_action:upload"},
-            {"text": "⏭ Skip Selected", "callback_data": "batch_action:skip"},
-        ])
-        keyboard.append([
-            {"text": "🛑 Cancel", "callback_data": "batch_action:cancel"},
-        ])
-
-        msg_id = self.send_message("\n".join(lines), reply_markup={"inline_keyboard": keyboard})
-        print(f"[Telegram] Batch selection sent. Waiting for selection...")
-
-        # Add timeout mechanism (5 minutes max)
-        start_time = time.time()
-        timeout_seconds = 300  # 5 minutes
-
-        while True:
-            # Check timeout
-            if time.time() - start_time > timeout_seconds:
-                log.warning("Batch selection timed out after %d seconds", timeout_seconds)
-                self._batch_state = None
-                if msg_id:
-                    self.edit_message(msg_id, "⏰ <b>Batch selection timed out.</b> Please try again.")
-                return None
-
-            try:
-                resp = requests.get(f"{self.base_url}/getUpdates", params={"offset": self.offset, "timeout": 30}, timeout=35)
-                if resp.status_code != 200:
-                    log.warning("Telegram API returned status %d, retrying...", resp.status_code)
-                    time.sleep(2)
-                    continue
-                updates = resp.json().get("result", [])
-                for u in updates:
-                    self.offset = u["update_id"] + 1
-                    if "callback_query" in u:
-                        cb = u["callback_query"]
-                        if str(cb.get("from", {}).get("id")) != self.chat_id:
-                            continue
-                        data = cb.get("data", "")
-                        self.answer_callback(cb["id"], "Processing...")
-
-                        if data.startswith("batch_toggle:"):
-                            if self._batch_state is None:
-                                log.warning("batch_toggle received but _batch_state is None")
-                                self.answer_callback(cb["id"], "Error: Batch state lost. Please try /batch again.")
-                                continue
-                            key = data.split(":")[1]
-                            if key in self._batch_state.selected_keys:
-                                self._batch_state.selected_keys.remove(key)
-                            else:
-                                self._batch_state.selected_keys.add(key)
-                            # Update the message with new checkboxes
-                            self._update_batch_keyboard(msg_id, display_recordings)
-                            continue
-
-                        if data == "batch_action:upload":
-                            if self._batch_state is None:
-                                log.warning("batch_action:upload received but _batch_state is None")
-                                self.answer_callback(cb["id"], "Error: Batch state lost. Please try /batch again.")
-                                continue
-                            if not self._batch_state.selected_keys:
-                                self.answer_callback(cb["id"], "No recordings selected!")
-                                continue
-                            self._batch_state.action = "upload"
-                            if msg_id: self.edit_message(msg_id, f"✅ <b>Batch upload selected:</b> {len(self._batch_state.selected_keys)} recordings")
-                            return self._batch_state
-
-                        if data == "batch_action:skip":
-                            if self._batch_state is None:
-                                log.warning("batch_action:skip received but _batch_state is None")
-                                self.answer_callback(cb["id"], "Error: Batch state lost. Please try /batch again.")
-                                continue
-                            if not self._batch_state.selected_keys:
-                                self.answer_callback(cb["id"], "No recordings selected!")
-                                continue
-                            self._batch_state.action = "skip"
-                            if msg_id: self.edit_message(msg_id, f"⏭ <b>Batch skip selected:</b> {len(self._batch_state.selected_keys)} recordings")
-                            return self._batch_state
-
-                        if data == "batch_action:cancel":
-                            self._batch_state = None
-                            if msg_id: self.edit_message(msg_id, "🛑 <b>Batch selection cancelled.</b>")
-                            return None
-
-                        self._stash_stray(u)
-            except requests.exceptions.Timeout:
-                log.warning("Telegram polling timeout, retrying...")
-                continue
-            except requests.exceptions.RequestException as exc:
-                log.error("Telegram polling error: %s", exc)
-                time.sleep(2)
-            except Exception as exc:
-                log.error("Unexpected error in batch selection: %s", exc)
-                time.sleep(2)
-
-    def _update_batch_keyboard(self, msg_id: int, recordings: list[Recording]) -> None:
-        """Update the batch selection keyboard with current checkbox states."""
-        if self._batch_state is None:
-            log.warning("_update_batch_keyboard called with None _batch_state")
-            return
-
-        keyboard = []
-        for i, rec in enumerate(recordings):
-            key = rec.key
-            checkbox = "☑" if key in self._batch_state.selected_keys else "☐"
-            topic_short = rec.topic[:30] + "..." if len(rec.topic) > 30 else rec.topic
-            keyboard.append([{"text": f"{checkbox} {i+1}. {topic_short}", "callback_data": f"batch_toggle:{key}"}])
-
-        keyboard.append([
-            {"text": "✅ Upload Selected", "callback_data": "batch_action:upload"},
-            {"text": "⏭ Skip Selected", "callback_data": "batch_action:skip"},
-        ])
-        keyboard.append([
-            {"text": "🛑 Cancel", "callback_data": "batch_action:cancel"},
-        ])
-
-        try:
-            payload = {"chat_id": self.chat_id, "message_id": msg_id, "reply_markup": json.dumps({"inline_keyboard": keyboard})}
-            requests.post(f"{self.base_url}/editMessageReplyMarkup", json=payload, timeout=10)
-        except Exception as exc:
-            log.error("Failed to update batch keyboard: %s", exc)
-
     def get_user_decision(self, request: ApprovalRequest) -> ApprovalDecision:
         rec = request.recording
         folders = config.FOLDERS
@@ -517,9 +361,6 @@ class TelegramBot:
                 if data.startswith(prefix):
                     self.answer_callback(cb["id"])
                     return cmd, data[len(prefix):]
-            # Handle batch-related callbacks in main.py, not here
-            if data.startswith("batch_"):
-                return None  # Let main.py handle these
             return None
 
         msg = u.get("message") or u.get("edited_message")
@@ -561,11 +402,11 @@ class TelegramBot:
             return cmd, 0
         if cmd == "undo":
             return "undo_list", ""
-        if cmd == "batch":
-            return "batch", ""
+        if cmd == "multi":
+            return "multi", ""
         self.send_message(
             f"❓ Unknown command <code>{cmd}</code>.\n"
-            "Try /run, /run 30, /run --dry, /undo, /batch, /status, /stats, /reset, /backup, or /help."
+            "Try /run, /run 30, /run --dry, /multi, /undo, /status, /stats, /reset, /backup, or /help."
         )
         return None
 
@@ -606,7 +447,7 @@ class TelegramBot:
                     self.offset = u["update_id"] + 1
                     result = self._interpret(u)
                     if result:
-                        self._queue.append(result)   # never drop the rest of a batch
+                        self._queue.append(result)
             except Exception as exc:
                 log.warning("Bot idle poll error: %s", exc)
                 time.sleep(2)

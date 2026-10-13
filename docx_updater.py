@@ -342,11 +342,15 @@ def update_docx_in_drive(drive, folder_id: str, rec, web_view_link: str, session
       original_cell_xml  (only when status == "updated") for undo
     Raises ValueError only if the folder has no .docx at all.
     """
+    log.info("update_docx_in_drive called: folder_id=%s, session_num=%d, link=%s", folder_id, session_num, web_view_link[:50] if web_view_link else "None")
+
     if not web_view_link:
+        log.warning("No web_view_link provided, skipping docx update")
         return {"status": "skipped", "detail": "no link to insert"}
 
     # Search for .docx files by name (most reliable method)
     query = (f"'{folder_id}' in parents and name contains '.docx' and trashed = false")
+    log.info("Searching for .docx files with query: %s", query)
     result = drive.files().list(
         q=query, fields="files(id, name, mimeType)", pageSize=20,
         supportsAllDrives=True, includeItemsFromAllDrives=True,
@@ -355,32 +359,44 @@ def update_docx_in_drive(drive, folder_id: str, rec, web_view_link: str, session
 
     log.info("Found %d .docx files in folder %s", len(files), folder_id)
     for f in files:
-        log.info("  - %s (mimeType: %s)", f.get("name"), f.get("mimeType"))
+        log.info("  - %s (id: %s, mimeType: %s)", f.get("name"), f.get("id"), f.get("mimeType"))
 
     if not files:
+        log.error("No .docx file found in folder %s", folder_id)
         raise ValueError(f"No .docx file found in folder {folder_id}.")
 
     when = rec.local_start()
+    log.info("Recording start time: %s (local)", when)
     last: Optional[dict] = None
     for f in files:
-        log.info("Checking docx: %s", f["name"])
-        doc = docx.Document(_download(drive, f["id"]))
-        result = link_session_in_document(doc, session_num, web_view_link, when)
-        info = {"status": result.status, "detail": result.detail,
-                "file_id": f["id"], "file_name": f["name"]}
+        log.info("Checking docx: %s (id: %s)", f["name"], f["id"])
+        try:
+            doc = docx.Document(_download(drive, f["id"]))
+            log.info("Successfully downloaded and parsed docx: %s", f["name"])
+            result = link_session_in_document(doc, session_num, web_view_link, when)
+            log.info("link_session_in_document result: status=%s, detail=%s", result.status, result.detail)
+            info = {"status": result.status, "detail": result.detail,
+                    "file_id": f["id"], "file_name": f["name"]}
 
-        if result.status == "updated":
-            log.info("Uploading modified docx back to Drive (%s)...", result.detail)
-            _upload(drive, f["id"], doc)
-            info["original_cell_xml"] = result.original_cell_xml
-            return info
-        if result.status == "already_linked":
-            return info          # right row found, nothing to do
-        last = info
+            if result.status == "updated":
+                log.info("Uploading modified docx back to Drive (%s)...", result.detail)
+                _upload(drive, f["id"], doc)
+                log.info("Successfully uploaded modified docx")
+                info["original_cell_xml"] = result.original_cell_xml
+                return info
+            if result.status == "already_linked":
+                log.info("Session already linked in docx: %s", f["name"])
+                return info          # right row found, nothing to do
+            last = info
+        except Exception as exc:
+            log.error("Error processing docx file %s: %s", f["name"], exc, exc_info=True)
+            last = {"status": "error", "detail": f"error processing {f['name']}: {str(exc)}",
+                    "file_id": f["id"], "file_name": f["name"]}
 
     assert last is not None
     names = ", ".join(f["name"] for f in files)
     last["detail"] = f"no row for session {session_num} in: {names}"
+    log.warning("No matching row found for session %d in any docx file: %s", session_num, names)
     return last
 
 

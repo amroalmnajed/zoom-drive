@@ -47,10 +47,3 @@ class ApprovalDecision:
     action: Literal["upload", "skip", "quit"]
     folder_key: Optional[str] = None
 
-@dataclass
-class BatchRequest:
-    recordings: list[Recording]
-    selected_keys: set[str]
-    action: Optional[Literal["upload", "skip"]] = None
-    folder_key: Optional[str] = None
-
