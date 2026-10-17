@@ -23,3 +23,6 @@ venv/
 ZoomDriveBot.xml
 
 token_*.json
+
+# Test output files
+test_out.docx

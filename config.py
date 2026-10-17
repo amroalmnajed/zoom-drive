@@ -141,7 +141,7 @@ FOLDERS: dict[str, dict] = {
     "1": {
         "name": "Main-Revision",
         "code": "Main",
-        "id": "1FG-D6YaW2I2VtWRGJl65Nz0OPu8HoRjb",
+        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_1",
         "keywords": ["Main", "Combined Main"],
         "token_env": "GOOGLE_TOKEN_MAIN_JSON",
         "token_file": BASE_DIR / "token_main.json",
@@ -149,7 +149,7 @@ FOLDERS: dict[str, dict] = {
     "2": {
         "name": "Combine Crash",
         "code": "Crash",
-        "id": "1zSHOl52WfwWROnp1pq2O4aLpmFfx7Tv8",
+        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_2",
         "keywords": ["Crash 1", "Combined Crash", "Combined Crash 1"],
         "token_env": "GOOGLE_TOKEN_CRASH_JSON",
         "token_file": BASE_DIR / "token_crash.json",
@@ -157,7 +157,7 @@ FOLDERS: dict[str, dict] = {
     "3": {
         "name": "IGCSE",
         "code": "G10",
-        "id": "1U0nJ4owRepRAf-hGjARDxWaHliLs4QA9",
+        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_3",
         "keywords": ["Private G10", "G10"],
         "token_env": "GOOGLE_TOKEN_G10_JSON",
         "token_file": BASE_DIR / "token_g10.json",
@@ -165,7 +165,7 @@ FOLDERS: dict[str, dict] = {
     "4": {
         "name": "Pre-igcse",
         "code": "G9",
-        "id": "1DC7Qfj1vrR32AcLR3Qgc7NjTId4iJOkw",
+        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_4",
         "keywords": ["Pre-IGCSE", "Pre", "pre", "pre-", "Pre-"],
         "token_env": "GOOGLE_TOKEN_G9_JSON",
         "token_file": BASE_DIR / "token_g9.json",
