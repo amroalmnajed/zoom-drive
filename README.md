@@ -104,6 +104,13 @@ TELEGRAM_CHAT_ID=your_telegram_chat_id
 
 #### Google Drive (Multi-Account)
 ```env
+# Folder IDs (get these from Google Drive URL: https://drive.google.com/drive/folders/FOLDER_ID)
+FOLDER_ID_1=your_drive_folder_id_1
+FOLDER_ID_2=your_drive_folder_id_2
+FOLDER_ID_3=your_drive_folder_id_3
+FOLDER_ID_4=your_drive_folder_id_4
+
+# OAuth tokens (for local development with file-based auth)
 GOOGLE_TOKEN_MAIN_JSON='{"token":"..."}'
 GOOGLE_TOKEN_CRASH_JSON='{"token":"..."}'
 GOOGLE_TOKEN_G10_JSON='{"token":"..."}'
@@ -125,21 +132,12 @@ ZOOM_RATE_LIMIT=10
 
 ### Folder Configuration
 
-Edit `config.py` to define your Drive folders and routing rules:
+Folder IDs are configured via environment variables for security and deployment flexibility:
 
-```python
-FOLDERS: dict[str, dict] = {
-    "1": {
-        "name": "Main-Revision",
-        "code": "Main",
-        "id": "your_drive_folder_id",
-        "keywords": ["Main", "Combined Main"],
-        "token_env": "GOOGLE_TOKEN_MAIN_JSON",
-        "token_file": BASE_DIR / "token_main.json",
-    },
-    # Add more folders...
-}
-```
+1. **For local development**: Set folder IDs in your `.env` file
+2. **For Railway/Cloud deployment**: Set them as environment variables in the Railway dashboard
+
+The folder routing rules (keywords, names, codes) are defined in `config.py`. To add or modify folders, edit the `FOLDERS` dictionary in `config.py` and add corresponding `FOLDER_ID_N` environment variables.
 
 ## Usage
 
@@ -194,6 +192,12 @@ python main.py --bot
    - Go to Railway Dashboard → Variables
    - Add all environment variables from `.env`
    - For Google tokens, paste the JSON content as strings (not file paths)
+   - **Important**: Set folder IDs as `FOLDER_ID_1`, `FOLDER_ID_2`, etc.
+
+3. **Configure Persistent Storage** (optional but recommended):
+   - Railway's filesystem is ephemeral - state files are lost on redeploy
+   - Add a Railway Volume for `/app/data` to persist `processed.json` and `undo_history.json`
+   - Or use Railway's built-in database for state persistence
 
 3. **Deploy**:
    - Railway will auto-deploy from GitHub
@@ -206,6 +210,25 @@ python main.py --bot
 3. **Approve**: Sends interactive messages to Telegram for user decision
 4. **Stream**: If approved, streams video directly from Zoom to Google Drive in chunks
 5. **Update**: On successful upload, updates `.docx` file with video hyperlink
+
+## Railway Deployment Notes
+
+### Ephemeral Filesystem
+Railway's filesystem is ephemeral - files are lost on each deployment. This affects:
+- `processed.json` - tracking which recordings have been processed
+- `undo_history.json` - undo functionality
+
+**Solutions**:
+1. **Recommended**: Add a Railway Volume mounted to `/app/data` for persistent storage
+2. **Alternative**: Use Railway's built-in database (PostgreSQL/Redis) for state persistence
+3. **Accept limitation**: State resets on each deploy (recordings may be re-processed)
+
+### Environment Variables
+All configuration must be set as Railway environment variables:
+- Zoom credentials (ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ZOOM_USER_ID)
+- Telegram credentials (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+- Google Drive folder IDs (FOLDER_ID_1, FOLDER_ID_2, etc.)
+- Google OAuth tokens as JSON strings (GOOGLE_TOKEN_MAIN_JSON, etc.)
 
 ## Development Conventions
 

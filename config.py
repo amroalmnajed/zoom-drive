@@ -141,7 +141,7 @@ FOLDERS: dict[str, dict] = {
     "1": {
         "name": "Main-Revision",
         "code": "Main",
-        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_1",
+        "id": os.getenv("FOLDER_ID_1", "YOUR_GOOGLE_DRIVE_FOLDER_ID_1"),
         "keywords": ["Main", "Combined Main"],
         "token_env": "GOOGLE_TOKEN_MAIN_JSON",
         "token_file": BASE_DIR / "token_main.json",
@@ -149,7 +149,7 @@ FOLDERS: dict[str, dict] = {
     "2": {
         "name": "Combine Crash",
         "code": "Crash",
-        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_2",
+        "id": os.getenv("FOLDER_ID_2", "YOUR_GOOGLE_DRIVE_FOLDER_ID_2"),
         "keywords": ["Crash 1", "Combined Crash", "Combined Crash 1"],
         "token_env": "GOOGLE_TOKEN_CRASH_JSON",
         "token_file": BASE_DIR / "token_crash.json",
@@ -157,7 +157,7 @@ FOLDERS: dict[str, dict] = {
     "3": {
         "name": "IGCSE",
         "code": "G10",
-        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_3",
+        "id": os.getenv("FOLDER_ID_3", "YOUR_GOOGLE_DRIVE_FOLDER_ID_3"),
         "keywords": ["Private G10", "G10"],
         "token_env": "GOOGLE_TOKEN_G10_JSON",
         "token_file": BASE_DIR / "token_g10.json",
@@ -165,7 +165,7 @@ FOLDERS: dict[str, dict] = {
     "4": {
         "name": "Pre-igcse",
         "code": "G9",
-        "id": "YOUR_GOOGLE_DRIVE_FOLDER_ID_4",
+        "id": os.getenv("FOLDER_ID_4", "YOUR_GOOGLE_DRIVE_FOLDER_ID_4"),
         "keywords": ["Pre-IGCSE", "Pre", "pre", "pre-", "Pre-"],
         "token_env": "GOOGLE_TOKEN_G9_JSON",
         "token_file": BASE_DIR / "token_g9.json",
@@ -277,6 +277,11 @@ def validate_config(need_google: bool = True) -> None:
     for key, folder in FOLDERS.items():
         if not folder.get("id") or not folder.get("name"):
             problems.append(f"Folder {key} needs both 'name' and 'id'. (Check config.py FOLDERS dict)")
+        # Check if folder ID is still a placeholder
+        if folder.get("id", "").startswith("YOUR_GOOGLE_DRIVE_FOLDER_ID"):
+            problems.append(
+                f"Folder {key} has a placeholder ID. Set FOLDER_ID_{key} environment variable or edit config.py."
+            )
 
     if need_google:
         if GOOGLE_AUTH_MODE == "oauth":
