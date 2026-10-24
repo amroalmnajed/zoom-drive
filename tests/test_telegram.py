@@ -17,7 +17,7 @@ r2 = requests.post(
     f"https://api.telegram.org/bot{token}/sendMessage",
     json={
         "chat_id": chat_id,
-        "text": "✅ <b>zoom-drive is online!</b>\nmain.py syntax is clean and all fixes are applied:\n• HTTP 308 redirect fix\n• Zoom access_token query-string fix\n• Dynamic session auto-detection\n• Telegram inline-keyboard approval flow\n\nReady to run <code>python main.py --days 30</code>",
+        "text": "✅ <b>zoom-drive is online!</b>\nbot_runtime.py syntax is clean and all fixes are applied:\n• HTTP 308 redirect fix\n• Zoom access_token query-string fix\n• Dynamic session auto-detection\n• Telegram inline-keyboard approval flow\n\nReady to run <code>python bot_runtime.py --days 30</code>",
         "parse_mode": "HTML",
     },
     timeout=10,

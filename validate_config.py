@@ -162,7 +162,7 @@ def main() -> int:
         print("[OK] All checks passed! Your configuration is ready.")
         print()
         print("You can now run the bot with:")
-        print("  python main.py --bot")
+        print("  python bot_runtime.py --bot")
         return 0
     else:
         print("[X] Some checks failed. Please fix the issues above.")

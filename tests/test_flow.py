@@ -36,7 +36,8 @@ config.STATE_FILE = __import__("pathlib").Path(tmp) / "processed.json"
 config.UNDO_FILE = __import__("pathlib").Path(tmp) / "undo.json"
 config.UNDO_DELETE_PERMANENTLY = False  # Use trashed=True instead of delete for test
 import googleapiclient.http as ghttp
-import main, docx_updater
+import docx_updater
+import undo_admin
 from undo_store import UndoStore
 from state import StateStore
 
@@ -110,17 +111,17 @@ eid = store.add({"rec_key":"rec-1","topic":"t","folder_key":"1","folder_name":"M
                  "docx_id":"DOCX1","docx_name":"Main_Revision.docx","docx_updated":True,
                  "original_cell_xml": info["original_cell_xml"]})
 
-main.get_drive_service = lambda folder: drive
+undo_admin.get_drive_service = lambda folder: drive
 bot = FakeBot()
-main._handle_undo_list(bot);  assert eid in json.dumps(bot.sent[-1][1]); print("/undo list OK")
-main._handle_undo_ask(bot, eid); assert "undoyes:" in json.dumps(bot.sent[-1][1]); print("confirm prompt OK")
-main._handle_undo_yes(bot, eid)
+undo_admin._handle_undo_list(bot);  assert eid in json.dumps(bot.sent[-1][1]); print("/undo list OK")
+undo_admin._handle_undo_ask(bot, eid); assert "undoyes:" in json.dumps(bot.sent[-1][1]); print("confirm prompt OK")
+undo_admin._handle_undo_yes(bot, eid)
 # print(bot.sent[-1][0])  # Skip print to avoid Unicode encoding issues on Windows
 assert drive.video_trashed
 d2 = docx.Document(io.BytesIO(drive.docx))
 assert "w:hyperlink" not in d2.tables[0].rows[2].cells[4]._tc.xml and d2.tables[0].rows[2].cells[4].text == "Link"
 assert not StateStore(config.STATE_FILE).should_hide("rec-1")      # offered again
 assert UndoStore(config.UNDO_FILE).get(eid)["undone"]
-main._handle_undo_yes(bot, eid); assert "already undone" in bot.sent[-1][0]
-main._handle_undo_list(bot); assert "Nothing to undo" in bot.sent[-1][0]
+undo_admin._handle_undo_yes(bot, eid); assert "already undone" in bot.sent[-1][0]
+undo_admin._handle_undo_list(bot); assert "Nothing to undo" in bot.sent[-1][0]
 print("ALL FLOW TESTS PASSED")

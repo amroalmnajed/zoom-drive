@@ -9,7 +9,10 @@
 - **Environment**: Deployed continuously on Railway (via GitHub), communicating primarily over external APIs.
 
 ## Directory & Component Map
-- `main.py` (Entry Point): Orchestrates fetching Zoom recordings, polling Telegram for user decisions, uploading to Drive, and updating docs. Can run in one-shot mode or persistent bot loop (`--bot`).
+- `bot_runtime.py` (Entry Point): Bot runtime, command dispatch, and CLI entrypoint. Orchestrates persistent bot loop and one-shot mode.
+- `standard_upload.py`: Standard Zoom recording approval/upload workflow (fetch, approve, stream, update docs).
+- `multi_upload.py`: Multi-folder recording selection/upload workflow (interactive Telegram inline buttons).
+- `undo_admin.py`: Undo operations (revert DOCX links, trash Drive videos) and state administration (status, stats, reset, backup, restore).
 - `config.py`: Centralizes environment variables, tuning parameters, and Google Drive folder configurations (`FOLDERS`).
 - `zoom_api.py`: Handles Zoom Server-to-Server (S2S) OAuth and retrieves recording metadata/download URLs.
 - `drive_api.py`: Manages Google Drive OAuth and performs the core chunked Resumable Upload (streaming directly from Zoom to Google Drive).
@@ -20,7 +23,7 @@
 - `auth_all.py`: Utility script for authenticating the 4 different Google accounts locally to generate `token_*.json` files.
 
 ## Data Flow & Architecture
-1. **Fetch**: `main.py` queries `zoom_api.py` for recent recordings.
+1. **Fetch**: `standard_upload.py` queries `zoom_api.py` for recent recordings.
 2. **Filter**: Skips recordings already marked in `processed.json` (managed by `state.py`).
 3. **Approve**: Sends interactive messages to Telegram (`telegram_bot.py`). Waits for user decision.
 4. **Stream**: If approved, `drive_api.py` requests a video stream from Zoom and `PUT`s it directly to Google Drive in chunks (16MB default).

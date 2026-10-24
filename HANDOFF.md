@@ -4,8 +4,8 @@
 The user requested the addition of multi-account Google Drive support (routing distinct class videos to 4 distinct Google accounts) and refining the `.docx` updating logic to match by "Session #" and insert hyperlinks into the "Link" column dynamically.
 
 ## Completed Steps
-- **Multi-Account Integration**: Updated `main.py` and `drive_api.py` to correctly initialize isolated Google Drive API instances per folder/class using folder-specific JSON tokens.
-- **Docx Matching Expansion**: Verified that `docx_updater.py` accurately identifies the "Session #" column (leftmost) and correctly constructs Word hyperlinks without overwriting mismatched cells. 
+- **Multi-Account Integration**: Updated `bot_runtime.py` and `drive_api.py` to correctly initialize isolated Google Drive API instances per folder/class using folder-specific JSON tokens.
+- **Docx Matching Expansion**: Verified that `docx_updater.py` accurately identifies the "Session #" column (leftmost) and correctly constructs Word hyperlinks without overwriting mismatched cells.
 - **Bug Fixes**: Rectified `config.py` execution order (NameError) and updated `requirements.txt` to include `python-docx`.
 - **Git State**: Added `token_*.json` to `.gitignore` for security. Committed and pushed all functional files to GitHub for Railway deployment.
 

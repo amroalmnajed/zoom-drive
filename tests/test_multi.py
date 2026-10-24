@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 from models import Recording, ZoomError
 import docx_updater
-import main
+import config
+import multi_upload
 import telegram_bot
 from telegram_bot import TelegramBot
 
@@ -137,12 +138,12 @@ class TestMultiRecordingSelection(unittest.TestCase):
         self.bot = FakeBot()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        main.config.STATE_FILE = Path(tmp.name) / "processed.json"
-        main.config.UNDO_FILE = Path(tmp.name) / "undo.json"
+        config.STATE_FILE = Path(tmp.name) / "processed.json"
+        config.UNDO_FILE = Path(tmp.name) / "undo.json"
 
     def test_handle_multi_lists_recordings_not_auto_pick(self):
-        with patch.object(main, "ZoomClient", return_value=self.zoom):
-            main._handle_multi(self.bot, dry_run=True, days=7)
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom):
+            multi_upload._handle_multi(self.bot, dry_run=True, days=7)
         self.assertEqual(self.zoom.last_days, 7)
         state = self.bot._multi_state
         self.assertEqual(state["phase"], "recording")
@@ -158,9 +159,9 @@ class TestMultiRecordingSelection(unittest.TestCase):
         self.assertNotIn("multi_action:upload", callbacks)
 
     def test_older_recording_can_be_selected(self):
-        with patch.object(main, "ZoomClient", return_value=self.zoom):
-            main._handle_multi(self.bot, dry_run=True, days=7)
-        main._handle_multi_rec_select(self.bot, "1")
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom):
+            multi_upload._handle_multi(self.bot, dry_run=True, days=7)
+        multi_upload._handle_multi_rec_select(self.bot, "1")
         state = self.bot._multi_state
         self.assertEqual(state["phase"], "folder")
         self.assertEqual(state["selected_rec"].topic, "Main Revision")
@@ -171,46 +172,46 @@ class TestMultiRecordingSelection(unittest.TestCase):
         self.assertIn("multi_action:upload", callbacks)
 
     def test_toggle_ignored_during_recording_phase(self):
-        with patch.object(main, "ZoomClient", return_value=self.zoom):
-            main._handle_multi(self.bot, dry_run=True)
-        main._handle_multi_toggle(self.bot, "1")
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom):
+            multi_upload._handle_multi(self.bot, dry_run=True)
+        multi_upload._handle_multi_toggle(self.bot, "1")
         self.assertEqual(self.bot._multi_state["phase"], "recording")
         self.assertEqual(self.bot._multi_state["selected_folders"], set())
         self.assertIn("select a recording first", self.bot.sent[-1][0].lower())
 
     def test_upload_uses_selected_recording(self):
-        with patch.object(main, "ZoomClient", return_value=self.zoom):
-            main._handle_multi(self.bot, dry_run=True, days=7)
-        main._handle_multi_rec_select(self.bot, "1")
-        first_key = next(iter(main.config.FOLDERS))
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom):
+            multi_upload._handle_multi(self.bot, dry_run=True, days=7)
+        multi_upload._handle_multi_rec_select(self.bot, "1")
+        first_key = next(iter(config.FOLDERS))
         self.bot._multi_state["selected_folders"].add(first_key)
-        with patch.object(main, "ZoomClient", return_value=self.zoom), \
-             patch.object(main, "get_next_session_number", return_value=9), \
-             patch.object(main, "upload_recording") as upload:
-            main._handle_multi_upload(self.bot)
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom), \
+             patch.object(multi_upload, "get_next_session_number", return_value=9), \
+             patch.object(multi_upload, "upload_recording") as upload:
+            multi_upload._handle_multi_upload(self.bot)
         self.assertIsNone(self.bot._multi_state)
         dry_texts = [t for t, _ in self.bot.sent if "[dry-run]" in t]
         self.assertTrue(dry_texts)
         upload.assert_not_called()
 
     def test_upload_before_recording_selection_is_blocked(self):
-        with patch.object(main, "ZoomClient", return_value=self.zoom):
-            main._handle_multi(self.bot, dry_run=True)
-        main._handle_multi_upload(self.bot)
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom):
+            multi_upload._handle_multi(self.bot, dry_run=True)
+        multi_upload._handle_multi_upload(self.bot)
         self.assertEqual(self.bot._multi_state["phase"], "recording")
         self.assertIn("select a recording first", self.bot.sent[-1][0].lower())
 
     def test_zoom_error_is_reported(self):
         zoom = FakeZoom(error=ZoomError("boom"))
-        with patch.object(main, "ZoomClient", return_value=zoom):
-            main._handle_multi(self.bot, days=7)
+        with patch.object(multi_upload, "ZoomClient", return_value=zoom):
+            multi_upload._handle_multi(self.bot, days=7)
         self.assertIsNone(self.bot._multi_state)
         self.assertIn("Zoom error", self.bot.sent[-1][0])
 
     def test_invalid_rec_index(self):
-        with patch.object(main, "ZoomClient", return_value=self.zoom):
-            main._handle_multi(self.bot, dry_run=True)
-        main._handle_multi_rec_select(self.bot, "99")
+        with patch.object(multi_upload, "ZoomClient", return_value=self.zoom):
+            multi_upload._handle_multi(self.bot, dry_run=True)
+        multi_upload._handle_multi_rec_select(self.bot, "99")
         self.assertEqual(self.bot._multi_state["phase"], "recording")
         self.assertIn("Invalid recording", self.bot.sent[-1][0])
 

@@ -26,7 +26,10 @@ An automated pipeline that fetches Zoom cloud recordings, routes them through a 
 
 ```
 zoom-drive/
-├── main.py              # Entry point and pipeline orchestration
+├── bot_runtime.py       # Bot runtime, command dispatch, and CLI entrypoint
+├── standard_upload.py   # Standard Zoom recording approval/upload workflow
+├── multi_upload.py      # Multi-folder recording selection/upload workflow
+├── undo_admin.py        # Undo and state administration workflow
 ├── config.py            # Configuration and environment variables
 ├── zoom_api.py          # Zoom Server-to-Server OAuth and recording fetch
 ├── drive_api.py         # Google Drive OAuth and resumable upload
@@ -145,24 +148,24 @@ The folder routing rules (keywords, names, codes) are defined in `config.py`. To
 
 Process recordings from the last 7 days:
 ```bash
-python main.py
+python bot_runtime.py
 ```
 
 Process recordings from the last 30 days:
 ```bash
-python main.py --days 30
+python bot_runtime.py --days 30
 ```
 
 Dry run (fetch and prompt only, no upload):
 ```bash
-python main.py --dry-run
+python bot_runtime.py --dry-run
 ```
 
 ### Bot Mode (Persistent)
 
 Run as a persistent Telegram bot:
 ```bash
-python main.py --bot
+python bot_runtime.py --bot
 ```
 
 #### Telegram Commands
@@ -205,7 +208,7 @@ python main.py --bot
 
 ## Data Flow
 
-1. **Fetch**: `main.py` queries `zoom_api.py` for recent recordings
+1. **Fetch**: `standard_upload.py` queries `zoom_api.py` for recent recordings
 2. **Filter**: Skips recordings already in `processed.json`
 3. **Approve**: Sends interactive messages to Telegram for user decision
 4. **Stream**: If approved, streams video directly from Zoom to Google Drive in chunks

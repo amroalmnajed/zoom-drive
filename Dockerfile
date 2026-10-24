@@ -43,4 +43,4 @@ ENV HEALTH_PORT=8080
 EXPOSE 8080 8443
 
 # Run the bot
-CMD ["python", "main.py", "--bot"]
+CMD ["python", "bot_runtime.py", "--bot"]
