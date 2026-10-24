@@ -329,6 +329,7 @@ def upload_recording(
     folder: dict,
     session_num: int,
     bot: Optional["TelegramBot"] = None,
+    shutdown_requested: bool = False,
 ) -> Optional[dict]:
     """
     Stream a Zoom recording directly into Google Drive using a pure-requests
@@ -371,8 +372,10 @@ def upload_recording(
     # ── Telegram live progress tracking ────────────────────────────────────
     # One message is sent, then edited in-place. Updates fire when:
     #   • a new 10% boundary is crossed, OR
-    #   • at least 25 MB has been sent since the last update
-    _PROGRESS_INTERVAL_BYTES = 25 * 1024 * 1024  # 25 MB
+    #   • at least the calculated bytes interval has been sent since the last update
+    # Calculate progress interval based on file size
+    # Minimum 5MB, or 5% of file size, whichever is larger
+    _PROGRESS_INTERVAL_BYTES = max(size // 20, 5 * 1024 * 1024)  # 5% or 5MB minimum
     _PROGRESS_INTERVAL_PCT   = 10                 # 10 %
     progress_msg_id: Optional[int] = None
     last_reported_pct: int = -1
@@ -437,6 +440,10 @@ def upload_recording(
         _send_progress(0)   # send the initial "0%" progress message
 
         while offset < size:
+            # Check for shutdown signal
+            if shutdown_requested:
+                log.info("Upload interrupted by shutdown signal at offset %d/%d", offset, size)
+                return None
             # Refresh token if it has expired
             if creds.expired or not creds.token:
                 creds.refresh(GoogleAuthRequest())

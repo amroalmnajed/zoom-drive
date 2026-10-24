@@ -313,7 +313,8 @@ def run_pipeline(bot: "TelegramBot", days: int, dry_run: bool = False,
 
             bot.send_message(f"🚀 <b>Starting Upload:</b> <code>{final_name}</code> to <b>{folder['name']}</b>...")
             try:
-                result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot)
+                result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot,
+                                         shutdown_requested=shutdown_requested)
                 result = result or {}
                 already_there = bool(result.get("existing"))
                 state.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"],

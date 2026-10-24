@@ -14,7 +14,7 @@ from typing import Optional
 
 import config
 import requests
-from models import Recording
+from models import Recording, ZoomError
 from state import StateStore
 from undo_store import UndoStore
 from zoom_api import ZoomClient
@@ -253,7 +253,8 @@ def _multi_upload_live(bot, rec, folder_key, folder, drive, zoom, session_num, f
     """Perform live upload for multi-folder workflow."""
     bot.send_message(f"🚀 <b>Uploading to {folder['name']}:</b> <code>{final_name}</code>")
     try:
-        result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot) or {}
+        result = upload_recording(drive, zoom, rec, folder, session_num, bot=bot,
+                                 shutdown_requested=_shutdown_requested) or {}
         state_store.mark(rec.key, "uploaded", topic=rec.topic, folder=folder["name"], drive_file_id=result.get("id"))
         bot.send_message(f"✅ <b>Uploaded to {folder['name']}:</b> <code>{final_name}</code>")
         docx_info: dict = {}

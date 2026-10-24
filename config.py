@@ -7,10 +7,13 @@ Everything else (folders, keywords, tuning knobs) is edited right here.
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+
+log = logging.getLogger("zoom_to_drive")
 
 # Load a local .env file if python-dotenv is installed (it is in requirements.txt).
 try:
@@ -202,13 +205,17 @@ ZOOM_RATE_LIMIT = float(os.getenv("ZOOM_RATE_LIMIT", "10"))
 # If False, they are shown again until uploaded (until they leave the lookback window).
 REMEMBER_SKIPPED = True
 
-STATE_FILE = BASE_DIR / "processed.json"
-UNDO_FILE = BASE_DIR / "undo_history.json"
+# Use /app/data if available (Railway persistent volume), else local
+DATA_DIR = Path("/app/data") if Path("/app/data").exists() else BASE_DIR
+# Ensure DATA_DIR exists
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+STATE_FILE = DATA_DIR / "processed.json"
+UNDO_FILE = DATA_DIR / "undo_history.json"
 
 # /undo moves the uploaded video to the Drive Bin (recoverable for 30 days).
 # Set UNDO_DELETE_PERMANENTLY=1 to delete it for good and free the space at once.
 UNDO_DELETE_PERMANENTLY = os.getenv("UNDO_DELETE_PERMANENTLY", "1") == "1"
-LOG_FILE = BASE_DIR / "zoom_to_drive.log"
+LOG_FILE = DATA_DIR / "zoom_to_drive.log"
 
 # Log level: DEBUG, INFO, WARNING, ERROR, CRITICAL
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -234,6 +241,30 @@ ENABLE_THUMBNAILS = os.getenv("ENABLE_THUMBNAILS", "true").lower() == "true"
 
 # Time offset in seconds to capture thumbnail frame (default: 2.0)
 THUMBNAIL_TIME_OFFSET = float(os.getenv("THUMBNAIL_TIME_OFFSET", "2.0"))
+
+
+# --------------------------------------------------------------------------- #
+# FFmpeg Availability Check
+# --------------------------------------------------------------------------- #
+def check_ffmpeg_available() -> bool:
+    """Check if FFmpeg is available on the system."""
+    try:
+        import subprocess
+        result = subprocess.run(["ffmpeg", "-version"],
+                                capture_output=True,
+                                timeout=5)
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+_FFMPEG_AVAILABLE = check_ffmpeg_available()
+
+# Disable features if FFmpeg not available
+if not _FFMPEG_AVAILABLE:
+    if ENABLE_VIDEO_METADATA or ENABLE_THUMBNAILS:
+        log.warning("FFmpeg not found. Disabling ENABLE_VIDEO_METADATA and ENABLE_THUMBNAILS.")
+        ENABLE_VIDEO_METADATA = False
+        ENABLE_THUMBNAILS = False
 
 # Telegram webhook settings
 # Set to True to use webhooks instead of polling (requires public HTTPS endpoint)
@@ -341,6 +372,10 @@ def validate_config(need_google: bool = True) -> None:
         problems.append("WEBHOOK_PORT must be one of: 80, 88, 443, 8443 (Telegram requirement).")
     if THUMBNAIL_TIME_OFFSET < 0:
         problems.append("THUMBNAIL_TIME_OFFSET must be >= 0.")
+
+    # Warn if FFmpeg is missing but features are enabled (not an error, just a warning)
+    if not _FFMPEG_AVAILABLE and (ENABLE_VIDEO_METADATA or ENABLE_THUMBNAILS):
+        log.warning("FFmpeg is not available on this system. Video metadata and thumbnail features will be disabled.")
 
     if problems:
         raise ValueError("Configuration problems:\n  - " + "\n  - ".join(problems))

@@ -206,7 +206,8 @@ def bot_mode(dry_run: bool = False) -> None:
                     log.info("Triggering scheduled run at %s", scheduled_time)
                     bot.send_message(f"⏰ <b>Scheduled run triggered</b> at {scheduled_time}")
                     uploaded, skipped, failed = run_pipeline(bot, config.LOOKBACK_DAYS, dry_run=dry_run,
-                                                           min_size=min_size, max_size=max_size)
+                                                           min_size=min_size, max_size=max_size,
+                                                           shutdown_requested=_shutdown_requested)
                     emoji = "✅" if not failed else "⚠️"
                     bot.send_message(
                         f"{emoji} <b>Scheduled run complete.</b>\n\n"
@@ -239,7 +240,8 @@ def bot_mode(dry_run: bool = False) -> None:
 
             if cmd == "run":
                 uploaded, skipped, failed = run_pipeline(bot, days, dry_run=dry_run,
-                                                          min_size=min_size, max_size=max_size)
+                                                          min_size=min_size, max_size=max_size,
+                                                          shutdown_requested=_shutdown_requested)
                 emoji = "✅" if not failed else "⚠️"
                 if dry_run:
                     bot.send_message(
@@ -260,7 +262,8 @@ def bot_mode(dry_run: bool = False) -> None:
 
             elif cmd == "run_dry":
                 uploaded, skipped, failed = run_pipeline(bot, days, dry_run=True,
-                                                          min_size=min_size, max_size=max_size)
+                                                          min_size=min_size, max_size=max_size,
+                                                          shutdown_requested=_shutdown_requested)
                 emoji = "✅" if not failed else "⚠️"
                 bot.send_message(
                     f"{emoji} <b>Dry-run complete.</b>\n\n"
@@ -373,6 +376,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     # ── One-shot terminal mode (original behaviour) ───────────────────────
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
     bot = TelegramBot(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
 
     # Get size filters from config or command line
@@ -383,7 +390,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                                             filter_topic=args.filter_topic,
                                             filter_from=args.filter_from,
                                             filter_to=args.filter_to,
-                                            min_size=min_size, max_size=max_size)
+                                            min_size=min_size, max_size=max_size,
+                                            shutdown_requested=_shutdown_requested)
     print(f"Done. Uploaded: {uploaded} | Skipped: {skipped} | Failed: {failed}")
     return 1 if failed else 0
 

@@ -197,10 +197,17 @@ python bot_runtime.py --bot
    - For Google tokens, paste the JSON content as strings (not file paths)
    - **Important**: Set folder IDs as `FOLDER_ID_1`, `FOLDER_ID_2`, etc.
 
-3. **Configure Persistent Storage** (optional but recommended):
+3. **Configure Persistent Storage** (recommended):
    - Railway's filesystem is ephemeral - state files are lost on redeploy
-   - Add a Railway Volume for `/app/data` to persist `processed.json` and `undo_history.json`
-   - Or use Railway's built-in database for state persistence
+   - **Add a Railway Volume** mounted to `/app/data` to persist state files:
+     - Go to Railway Dashboard → Your Project → Variables
+     - Scroll to "Volumes" section
+     - Click "New Volume"
+     - Set mount path to `/app/data`
+     - Select volume size (e.g., 1GB is sufficient for state files)
+   - This ensures `processed.json` and `undo_history.json` survive redeployments
+   - The application automatically detects and uses `/app/data` when available
+   - Alternative: Use Railway's built-in database (PostgreSQL/Redis) for state persistence
 
 3. **Deploy**:
    - Railway will auto-deploy from GitHub
@@ -223,6 +230,10 @@ Railway's filesystem is ephemeral - files are lost on each deployment. This affe
 
 **Solutions**:
 1. **Recommended**: Add a Railway Volume mounted to `/app/data` for persistent storage
+   - Navigate to Railway Dashboard → Your Project → Settings → Volumes
+   - Create a new volume with mount path `/app/data`
+   - The application automatically uses this directory for state files when available
+   - This ensures `processed.json` and `undo_history.json` survive redeployments
 2. **Alternative**: Use Railway's built-in database (PostgreSQL/Redis) for state persistence
 3. **Accept limitation**: State resets on each deploy (recordings may be re-processed)
 
