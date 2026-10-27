@@ -67,7 +67,8 @@ jobs:
           GOOGLE_TOKEN_G9_JSON: ${{ secrets.GOOGLE_TOKEN_G9_JSON }}
           LOCAL_TIMEZONE: "Africa/Cairo"
         run: |
-          python bot_runtime.py --days ${{ github.event.inputs.days || '7' }}
+          DAYS="${{ inputs.days }}"
+          python bot_runtime.py --days "${DAYS:-7}"
 
       - name: Save State Files (Commit processed.json)
         if: always()
