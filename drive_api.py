@@ -73,8 +73,8 @@ def _load_google_credentials(folder: Optional[dict] = None):
     # Check if we're in a server environment (no display)
     import os
     import sys
-    # Only skip browser auth if explicitly in Railway/Vercel
-    if os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('VERCEL'):
+    # Only skip browser auth if explicitly in Render/Railway/Vercel or headless server
+    if os.environ.get('RENDER') or os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('VERCEL') or os.environ.get('SERVER_MODE'):
         # Server environment - don't try interactive auth
         raise RuntimeError(
             f"Google Drive token not found or invalid for {token_path.name}. "

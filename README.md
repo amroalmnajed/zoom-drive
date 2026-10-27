@@ -20,7 +20,7 @@ An automated pipeline that fetches Zoom cloud recordings, routes them through a 
   - `google-api-python-client` - Google Drive API
   - `python-docx` - Word document manipulation
   - `requests` - HTTP streaming and API calls
-- **Deployment**: Railway (continuous deployment via GitHub)
+- **Deployment**: Railway & Render (continuous deployment via GitHub)
 
 ## Project Structure
 
@@ -212,6 +212,48 @@ python bot_runtime.py --bot
 3. **Deploy**:
    - Railway will auto-deploy from GitHub
    - The bot will start automatically
+
+### Render Deployment
+
+You can deploy `zoom-drive` to Render either as a **Web Service** (eligible for Render's Free tier) or as a **Background Worker** (Render Starter plan).
+
+#### Method 1: Render Blueprint (Easiest — 1-Click)
+
+1. **Push your code to GitHub** (including [`render.yaml`](file:///C:/Users/lenovo/Desktop/zoom-drive/render.yaml)).
+2. Log into the [Render Dashboard](https://dashboard.render.com).
+3. Click **New +** → **Blueprint**.
+4. Connect your GitHub repository.
+5. Render will automatically parse `render.yaml` and prompt you to input the environment variables (Zoom credentials, Telegram tokens, Google tokens, Folder IDs).
+6. Click **Apply** to deploy!
+
+#### Method 2: Manual Dashboard Setup
+
+1. **Create Service**:
+   - Go to [dashboard.render.com](https://dashboard.render.com) → **New +** → **Web Service** (or **Background Worker**).
+   - Connect your GitHub repository.
+2. **Configure Runtime**:
+   - **Runtime**: `Docker` (recommended, includes FFmpeg) or `Python 3`.
+   - **Build Command** (if Python runtime): `pip install -r requirements.txt`
+   - **Start Command** (if Python runtime): `python -u bot_runtime.py --bot`
+   - **Health Check Path** (if Web Service): `/health`
+3. **Configure Environment Variables**:
+   Under the **Environment** tab, add your credentials:
+   - `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`, `ZOOM_USER_ID`
+   - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+   - `FOLDER_ID_1`, `FOLDER_ID_2`, `FOLDER_ID_3`, `FOLDER_ID_4`
+   - `GOOGLE_TOKEN_MAIN_JSON`, `GOOGLE_TOKEN_CRASH_JSON`, etc. (paste JSON string directly)
+   - `ENABLE_HEALTH_CHECK=true`
+4. **Persistent Storage (Render Disks)**:
+   - To preserve state files (`processed.json`, `undo_history.json`) across deploys:
+   - Go to service **Settings** → **Disks** → **Add Disk**.
+   - **Name**: `zoom-drive-data`
+   - **Mount Path**: `/app/data`
+   - **Size**: `1 GB`
+   *(Note: Disks require Render Starter plan or higher).*
+
+#### Render Free Tier Considerations
+- **Sleep prevention**: Render free Web Services spin down after 15 minutes of HTTP inactivity. If running the bot in polling mode on the free tier, set up a free uptime monitor (e.g., [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) to ping `https://<your-render-app>.onrender.com/health` every 10 minutes.
+- **Webhook mode**: Alternatively, enable Telegram Webhook mode (`TELEGRAM_USE_WEBHOOK=true` and `TELEGRAM_WEBHOOK_URL=https://<your-render-app>.onrender.com/webhook/<bot_token>`). Telegram will send updates directly as HTTP requests to Render, automatically waking up the container!
 
 ## Data Flow
 

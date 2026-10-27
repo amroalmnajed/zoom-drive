@@ -20,8 +20,8 @@ log = logging.getLogger("zoom_to_drive.health")
 
 app = Flask(__name__)
 
-# Get port from environment or use default
-HEALTH_PORT = int(os.getenv("HEALTH_PORT", "8080"))
+# Get port from environment (Render injects PORT, Railway uses HEALTH_PORT/PORT) or use default
+HEALTH_PORT = int(os.getenv("PORT", os.getenv("HEALTH_PORT", "8080")))
 
 # Simple cache for API connectivity checks (30 seconds)
 _last_health_check_time = 0

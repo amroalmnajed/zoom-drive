@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -112,6 +113,17 @@ def _create_webhook_app(bot: "TelegramBot"):
     return app
 
 
+def _run_health_server(host: str, port: int):
+    """Run Flask health check server in a separate thread for cloud deployments (e.g. Render/Railway)."""
+    try:
+        from health_check import app as health_app
+        import logging as _logging
+        _logging.getLogger("werkzeug").setLevel(_logging.WARNING)
+        health_app.run(host=host, port=port, threaded=True)
+    except Exception as exc:
+        log.error("Health check server error: %s", exc)
+
+
 def _run_webhook_server(app, host: str, port: int):
     """Run Flask webhook server in a separate thread."""
     try:
@@ -163,6 +175,22 @@ def bot_mode(dry_run: bool = False) -> None:
             )
             _flask_thread.start()
             time.sleep(2)  # Give server time to start
+    else:
+        # Polling mode: if PORT or ENABLE_HEALTH_CHECK is set (e.g., on Render or Railway Web Service),
+        # start the health check HTTP server in a background thread to satisfy port binding requirements
+        http_port = os.getenv("PORT") or (os.getenv("HEALTH_PORT") if os.getenv("ENABLE_HEALTH_CHECK", "false").lower() == "true" else None)
+        if http_port:
+            try:
+                port_num = int(http_port)
+                log.info("Starting background health check server on port %d", port_num)
+                health_thread = threading.Thread(
+                    target=_run_health_server,
+                    args=("0.0.0.0", port_num),
+                    daemon=True
+                )
+                health_thread.start()
+            except ValueError:
+                log.warning("Invalid HTTP port for health check: %s", http_port)
 
     # Build startup message
     startup_msg = (

@@ -1,0 +1,64 @@
+# Render Blueprint Configuration for zoom-drive
+# Docs: https://render.com/docs/blueprint-spec
+#
+# Choose your deployment style:
+# - Web Service (Default below): Runs bot + health check on $PORT. Eligible for Free tier!
+# - Background Worker: Change `type: web` to `type: worker`, remove healthCheckPath. (Requires Starter plan $7/mo).
+
+services:
+  - type: web
+    name: zoom-drive
+    runtime: docker
+    plan: free # Change to starter if adding a persistent disk
+    healthCheckPath: /health
+    # To attach a persistent disk (requires Starter plan or higher):
+    # disk:
+    #   name: zoom-drive-data
+    #   mountPath: /app/data
+    #   sizeGB: 1
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: ENABLE_HEALTH_CHECK
+        value: "true"
+      # Zoom Credentials
+      - key: ZOOM_ACCOUNT_ID
+        sync: false
+      - key: ZOOM_CLIENT_ID
+        sync: false
+      - key: ZOOM_CLIENT_SECRET
+        sync: false
+      - key: ZOOM_USER_ID
+        sync: false
+      # Telegram Credentials
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Google Drive Folders
+      - key: FOLDER_ID_1
+        sync: false
+      - key: FOLDER_ID_2
+        sync: false
+      - key: FOLDER_ID_3
+        sync: false
+      - key: FOLDER_ID_4
+        sync: false
+      # Google OAuth Tokens (paste the JSON content as string)
+      - key: GOOGLE_TOKEN_MAIN_JSON
+        sync: false
+      - key: GOOGLE_TOKEN_CRASH_JSON
+        sync: false
+      - key: GOOGLE_TOKEN_G10_JSON
+        sync: false
+      - key: GOOGLE_TOKEN_G9_JSON
+        sync: false
+      # Optional Settings
+      - key: LOOKBACK_DAYS
+        value: "7"
+      - key: LOCAL_TIMEZONE
+        value: "Africa/Cairo"
+      - key: UPLOAD_CHUNK_MB
+        value: "16"
+      - key: UNDO_DELETE_PERMANENTLY
+        value: "1"

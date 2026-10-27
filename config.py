@@ -205,8 +205,8 @@ ZOOM_RATE_LIMIT = float(os.getenv("ZOOM_RATE_LIMIT", "10"))
 # If False, they are shown again until uploaded (until they leave the lookback window).
 REMEMBER_SKIPPED = True
 
-# Use /app/data if available (Railway persistent volume), else local
-DATA_DIR = Path("/app/data") if Path("/app/data").exists() else BASE_DIR
+# Use DATA_DIR env var if set, else /app/data if available (Railway/Render persistent volume), else local
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data" if Path("/app/data").exists() else BASE_DIR))
 # Ensure DATA_DIR exists
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 STATE_FILE = DATA_DIR / "processed.json"
@@ -277,8 +277,8 @@ TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL", "")
 # Optional secret token for webhook security validation
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
-# Webhook server configuration
-WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
+# Webhook server configuration (defaults to Render/Railway PORT if available, else WEBHOOK_PORT or 8443)
+WEBHOOK_PORT = int(os.getenv("PORT", os.getenv("WEBHOOK_PORT", "8443")))
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST", "0.0.0.0")
 
 
@@ -368,8 +368,11 @@ def validate_config(need_google: bool = True) -> None:
     # Validate webhook configuration
     if TELEGRAM_USE_WEBHOOK and not TELEGRAM_WEBHOOK_URL:
         problems.append("TELEGRAM_USE_WEBHOOK is True but TELEGRAM_WEBHOOK_URL is not set.")
-    if WEBHOOK_PORT not in (80, 88, 443, 8443):
-        problems.append("WEBHOOK_PORT must be one of: 80, 88, 443, 8443 (Telegram requirement).")
+    # Telegram requires public webhook URL port to be 80, 88, 443, or 8443.
+    # Behind a reverse proxy (e.g. Render, Railway, cloud containers), the internal listening port can be any port.
+    if not (os.getenv("RENDER") or os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("PORT")):
+        if WEBHOOK_PORT not in (80, 88, 443, 8443):
+            problems.append("WEBHOOK_PORT must be one of: 80, 88, 443, 8443 (Telegram requirement).")
     if THUMBNAIL_TIME_OFFSET < 0:
         problems.append("THUMBNAIL_TIME_OFFSET must be >= 0.")
 
