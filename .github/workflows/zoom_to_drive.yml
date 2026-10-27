@@ -37,10 +37,20 @@ jobs:
         run: |
           pip install -r requirements.txt
 
+      - name: Create .env Configuration (One-Paste Support)
+        env:
+          ENV_CONTENT: ${{ secrets.ENV_FILE }}
+        run: |
+          if [ -n "$ENV_CONTENT" ]; then
+            printf '%s\n' "$ENV_CONTENT" > .env
+            echo "Successfully created .env from ENV_FILE secret."
+          fi
+
       - name: Run Pipeline (Zoom -> Cloud -> Google Drive)
         env:
           PYTHONUNBUFFERED: "1"
           SERVER_MODE: "1"
+          # Fallbacks if individual secrets are used instead of ENV_FILE
           ZOOM_ACCOUNT_ID: ${{ secrets.ZOOM_ACCOUNT_ID }}
           ZOOM_CLIENT_ID: ${{ secrets.ZOOM_CLIENT_ID }}
           ZOOM_CLIENT_SECRET: ${{ secrets.ZOOM_CLIENT_SECRET }}
