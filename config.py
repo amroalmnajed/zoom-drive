@@ -19,7 +19,7 @@ log = logging.getLogger("zoom_to_drive")
 try:
     from dotenv import load_dotenv
 
-    load_dotenv(BASE_DIR / ".env")
+    load_dotenv(BASE_DIR / ".env", override=True)
 except ImportError:  # pragma: no cover - dotenv is optional
     pass
 

@@ -39,33 +39,20 @@ jobs:
 
       - name: Create .env Configuration (One-Paste Support)
         env:
-          ENV_CONTENT: ${{ secrets.ENV_FILE }}
+          ENV_CONTENT: ${{ secrets.ENV_FILE || vars.ENV_FILE }}
         run: |
           if [ -n "$ENV_CONTENT" ]; then
             printf '%s\n' "$ENV_CONTENT" > .env
-            echo "Successfully created .env from ENV_FILE secret."
+            echo "Successfully created .env file ($(wc -l < .env) lines loaded)."
+          else
+            echo "::error::ENV_FILE secret was not found or is empty! Please verify under GitHub Settings -> Secrets and variables -> Actions"
+            exit 1
           fi
 
       - name: Run Pipeline (Zoom -> Cloud -> Google Drive)
         env:
           PYTHONUNBUFFERED: "1"
           SERVER_MODE: "1"
-          # Fallbacks if individual secrets are used instead of ENV_FILE
-          ZOOM_ACCOUNT_ID: ${{ secrets.ZOOM_ACCOUNT_ID }}
-          ZOOM_CLIENT_ID: ${{ secrets.ZOOM_CLIENT_ID }}
-          ZOOM_CLIENT_SECRET: ${{ secrets.ZOOM_CLIENT_SECRET }}
-          ZOOM_USER_ID: ${{ secrets.ZOOM_USER_ID }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FOLDER_ID_1: ${{ secrets.FOLDER_ID_1 }}
-          FOLDER_ID_2: ${{ secrets.FOLDER_ID_2 }}
-          FOLDER_ID_3: ${{ secrets.FOLDER_ID_3 }}
-          FOLDER_ID_4: ${{ secrets.FOLDER_ID_4 }}
-          GOOGLE_TOKEN_MAIN_JSON: ${{ secrets.GOOGLE_TOKEN_MAIN_JSON }}
-          GOOGLE_TOKEN_CRASH_JSON: ${{ secrets.GOOGLE_TOKEN_CRASH_JSON }}
-          GOOGLE_TOKEN_G10_JSON: ${{ secrets.GOOGLE_TOKEN_G10_JSON }}
-          GOOGLE_TOKEN_G9_JSON: ${{ secrets.GOOGLE_TOKEN_G9_JSON }}
-          LOCAL_TIMEZONE: "Africa/Cairo"
         run: |
           DAYS="${{ inputs.days }}"
           python bot_runtime.py --days "${DAYS:-7}"
