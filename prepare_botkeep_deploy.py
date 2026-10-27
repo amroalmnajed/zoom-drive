@@ -26,6 +26,10 @@ def create_botkeep_deploy():
         "config.py",
         "auth_all.py",
         "botkeep_start.py",
+        "models.py",
+        "utils.py",
+        "error_handler.py",
+        "health_check.py",
         "requirements.txt",
         "env.example",
     ]
