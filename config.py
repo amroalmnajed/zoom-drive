@@ -124,8 +124,10 @@ def _write_env_json(env_key: str, file_path: Path):
             pass
 
 _write_env_json("GOOGLE_CREDENTIALS_JSON", GOOGLE_OAUTH_CLIENT_FILE)
-# Still write the default one just in case
+# Still write the default one just in case (fallback to main token if available)
 _write_env_json("GOOGLE_TOKEN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
+if not GOOGLE_OAUTH_TOKEN_FILE.exists() and os.getenv("GOOGLE_TOKEN_MAIN_JSON"):
+    _write_env_json("GOOGLE_TOKEN_MAIN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
 
 
 
@@ -316,7 +318,8 @@ def validate_config(need_google: bool = True) -> None:
 
     if need_google:
         if GOOGLE_AUTH_MODE == "oauth":
-            if not GOOGLE_OAUTH_CLIENT_FILE.exists() and not GOOGLE_OAUTH_TOKEN_FILE.exists():
+            has_folder_tokens = any(f.get("token_file") and Path(f["token_file"]).exists() for f in FOLDERS.values())
+            if not GOOGLE_OAUTH_CLIENT_FILE.exists() and not GOOGLE_OAUTH_TOKEN_FILE.exists() and not has_folder_tokens:
                 problems.append(
                     f"OAuth client file not found: {GOOGLE_OAUTH_CLIENT_FILE} "
                     "(download it from Google Cloud Console and save as credentials.json)."
