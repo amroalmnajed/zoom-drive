@@ -133,7 +133,7 @@ class TestGoogleDocsExport(unittest.TestCase):
 
 class TestMultiRecordingSelection(unittest.TestCase):
     def setUp(self):
-        self.recs = [_rec("a", "Crash Class", 12), _rec("b", "Main Revision", 11)]
+        self.recs = [_rec("a", "G9 Class", 12), _rec("b", "G10 Revision", 11)]
         self.zoom = FakeZoom(self.recs)
         self.bot = FakeBot()
         tmp = tempfile.TemporaryDirectory()
@@ -151,8 +151,8 @@ class TestMultiRecordingSelection(unittest.TestCase):
         self.assertEqual(len(state["recordings"]), 2)
         text, markup = self.bot.sent[-1]
         self.assertIn("Select a recording", text)
-        self.assertIn("Crash Class", text)
-        self.assertIn("Main Revision", text)
+        self.assertIn("G9 Class", text)
+        self.assertIn("G10 Revision", text)
         callbacks = [btn["callback_data"] for row in markup["inline_keyboard"] for btn in row]
         self.assertIn("multi_rec:0", callbacks)
         self.assertIn("multi_rec:1", callbacks)
@@ -164,7 +164,7 @@ class TestMultiRecordingSelection(unittest.TestCase):
         multi_upload._handle_multi_rec_select(self.bot, "1")
         state = self.bot._multi_state
         self.assertEqual(state["phase"], "folder")
-        self.assertEqual(state["selected_rec"].topic, "Main Revision")
+        self.assertEqual(state["selected_rec"].topic, "G10 Revision")
         self.assertEqual(state["selected_rec"].file_id, "b")
         folder_msg, markup = self.bot.sent[-1]
         self.assertIn("Select folders", folder_msg)

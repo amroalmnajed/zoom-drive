@@ -17,9 +17,9 @@ URL = "https://drive.google.com/file/d/ABC/view"
 OCT10 = datetime(2026, 10, 10, 9, 0)
 
 
-def build_main():
+def build_g10():
     d = docx.Document()
-    d.add_paragraph("Main Revision Records")
+    d.add_paragraph("G10 Revision Records")
     t = d.add_table(rows=1, cols=5)
     for c, h in zip(t.rows[0].cells, ["Session #", "Date", "Day", "Content", "Link"]):
         c.text = h
@@ -38,9 +38,9 @@ def build_main():
     return d, t
 
 
-def build_crash():
+def build_g9():
     d = docx.Document()
-    d.add_paragraph("Crash Course Records")
+    d.add_paragraph("G9 Course Records")
     t1 = d.add_table(rows=1, cols=5)
     for c, h in zip(t1.rows[0].cells, ["Session #", "Date", "Day", "Content", "Link"]):
         c.text = h
@@ -48,7 +48,7 @@ def build_crash():
         r = t1.add_row().cells
         r[0].text, r[1].text, r[2].text, r[4].text = str(s), dt, day, "link"
     d.add_page_break()
-    d.add_paragraph("Crash Course Records")
+    d.add_paragraph("G9 Course Records")
     t2 = d.add_table(rows=0, cols=5)  # NO header row
     for s, dt, day in [(26, "10-10", "Saturday"), (27, "10-11", "Sunday"), (28, "10-12", "Monday")]:
         r = t2.add_row().cells
@@ -67,9 +67,9 @@ def cell_for(d, ti, ri, ci):
     return d.tables[ti].rows[ri].cells[ci]
 
 
-def test_main_s43():
-    """Main S43 links correctly without matching row 40."""
-    d, t = build_main()
+def test_g10_s43():
+    """G10 S43 links correctly without matching row 40."""
+    d, t = build_g10()
     for ri, s in ((1, 40), (2, 41), (3, 42)):
         r = link_session_in_document(d, s, f"https://x/{s}", None)
         assert r.status == "updated"
@@ -89,9 +89,9 @@ def test_already_linked():
     assert r.status == "already_linked", r
 
 
-def test_crash_s26_second_table():
-    """Crash S26 is found in the second header-less table."""
-    d, t1, t2 = build_crash()
+def test_g9_s26_second_table():
+    """G9 S26 is found in the second header-less table."""
+    d, t1, t2 = build_g9()
     r = link_session_in_document(d, 26, URL, OCT10)
     assert r.status == "updated" and "table 2, row 1" in r.detail, r
     d = roundtrip(d)

@@ -106,9 +106,9 @@ assert docx_updater.update_docx_in_drive(drive, "F", rec, URL+"2", 43)["status"]
 # register undo entry + state exactly as the pipeline does
 state = StateStore(config.STATE_FILE); state.mark("rec-1", "uploaded", topic="t")
 store = UndoStore(config.UNDO_FILE)
-eid = store.add({"rec_key":"rec-1","topic":"t","folder_key":"1","folder_name":"Main-Revision","session":43,
-                 "video_name":"GMT20261010_Main_S43.mp4","video_id":"VID","video_uploaded":True,"link":URL,
-                 "docx_id":"DOCX1","docx_name":"Main_Revision.docx","docx_updated":True,
+eid = store.add({"rec_key":"rec-1","topic":"t","folder_key":"1","folder_name":"IGCSE","session":43,
+                 "video_name":"GMT20261010_G10_S43.mp4","video_id":"VID","video_uploaded":True,"link":URL,
+                 "docx_id":"DOCX1","docx_name":"G10_Revision.docx","docx_updated":True,
                  "original_cell_xml": info["original_cell_xml"]})
 
 undo_admin.get_drive_service = lambda folder: drive

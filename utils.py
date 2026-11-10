@@ -112,7 +112,7 @@ def build_drive_filename(rec: Recording, course_code: str, session_num: int) -> 
 
     Args:
         rec: Recording object with metadata
-        course_code: Course code (e.g., "Main", "Crash", "G10")
+        course_code: Course code (e.g., "G10", "G9")
         session_num: Session number
 
     Returns:
