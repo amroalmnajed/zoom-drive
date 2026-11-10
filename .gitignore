@@ -26,3 +26,4 @@ token_*.json
 
 # Test output files
 test_out.docx
+.aider*

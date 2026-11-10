@@ -8,8 +8,6 @@ def authenticate_all():
     
     # Show user the emails to prepare them
     emails = {
-        "Main-Revision": "maincombined26@gmail.com",
-        "Combine Crash": "Yamanigcse2027@gmail.com",
         "IGCSE": "igcsechem2027@gmail.com",
         "Pre-igcse": "chemcore2027@gmail.com"
     }

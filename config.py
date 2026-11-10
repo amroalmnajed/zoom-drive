@@ -124,10 +124,10 @@ def _write_env_json(env_key: str, file_path: Path):
             pass
 
 _write_env_json("GOOGLE_CREDENTIALS_JSON", GOOGLE_OAUTH_CLIENT_FILE)
-# Still write the default one just in case (fallback to main token if available)
+# Still write the default one just in case (fallback to G10 token if available)
 _write_env_json("GOOGLE_TOKEN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
-if not GOOGLE_OAUTH_TOKEN_FILE.exists() and os.getenv("GOOGLE_TOKEN_MAIN_JSON"):
-    _write_env_json("GOOGLE_TOKEN_MAIN_JSON", GOOGLE_OAUTH_TOKEN_FILE)
+if not GOOGLE_OAUTH_TOKEN_FILE.exists() and os.getenv("GOOGLE_TOKEN_G10_JSON"):
+    _write_env_json("GOOGLE_TOKEN_G10_JSON", GOOGLE_OAUTH_TOKEN_FILE)
 
 
 
@@ -138,39 +138,22 @@ GOOGLE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 # --------------------------------------------------------------------------- #
 # Folder routing rules
 # --------------------------------------------------------------------------- #
-# Keys ("1".."4") are what the user types in the terminal to override.
-# Matching is case-insensitive, whole-word (so "Main" will NOT match
-# "Maintenance"), and the LONGEST matching keyword across all folders wins
-# (so "Pre-IGCSE Crash 1" -> Pre-igcse, not Combine Crash).
+# Keys ("1".."N") are what the user types in the terminal to override.
+# Matching is case-insensitive, whole-word, and the LONGEST matching keyword
+# across all folders wins.
 FOLDERS: dict[str, dict] = {
     "1": {
-        "name": "Main-Revision",
-        "code": "Main",
-        "id": os.getenv("FOLDER_ID_1", "YOUR_GOOGLE_DRIVE_FOLDER_ID_1"),
-        "keywords": ["Main", "Combined Main"],
-        "token_env": "GOOGLE_TOKEN_MAIN_JSON",
-        "token_file": BASE_DIR / "token_main.json",
-    },
-    "2": {
-        "name": "Combine Crash",
-        "code": "Crash",
-        "id": os.getenv("FOLDER_ID_2", "YOUR_GOOGLE_DRIVE_FOLDER_ID_2"),
-        "keywords": ["Crash 1", "Combined Crash", "Combined Crash 1"],
-        "token_env": "GOOGLE_TOKEN_CRASH_JSON",
-        "token_file": BASE_DIR / "token_crash.json",
-    },
-    "3": {
         "name": "IGCSE",
         "code": "G10",
-        "id": os.getenv("FOLDER_ID_3", "YOUR_GOOGLE_DRIVE_FOLDER_ID_3"),
+        "id": os.getenv("FOLDER_ID_1", "YOUR_GOOGLE_DRIVE_FOLDER_ID_1"),
         "keywords": ["Private G10", "G10"],
         "token_env": "GOOGLE_TOKEN_G10_JSON",
         "token_file": BASE_DIR / "token_g10.json",
     },
-    "4": {
+    "2": {
         "name": "Pre-igcse",
         "code": "G9",
-        "id": os.getenv("FOLDER_ID_4", "YOUR_GOOGLE_DRIVE_FOLDER_ID_4"),
+        "id": os.getenv("FOLDER_ID_2", "YOUR_GOOGLE_DRIVE_FOLDER_ID_2"),
         "keywords": ["Pre-IGCSE", "Pre", "pre", "pre-", "Pre-"],
         "token_env": "GOOGLE_TOKEN_G9_JSON",
         "token_file": BASE_DIR / "token_g9.json",

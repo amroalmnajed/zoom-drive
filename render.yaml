@@ -40,15 +40,7 @@ services:
         sync: false
       - key: FOLDER_ID_2
         sync: false
-      - key: FOLDER_ID_3
-        sync: false
-      - key: FOLDER_ID_4
-        sync: false
       # Google OAuth Tokens (paste the JSON content as string)
-      - key: GOOGLE_TOKEN_MAIN_JSON
-        sync: false
-      - key: GOOGLE_TOKEN_CRASH_JSON
-        sync: false
       - key: GOOGLE_TOKEN_G10_JSON
         sync: false
       - key: GOOGLE_TOKEN_G9_JSON

@@ -20,7 +20,7 @@
 - `telegram_bot.py`: Implements Telegram long-polling and interactive inline keyboards for manual user categorization/approval.
 - `state.py`: Manages local persistence (`processed.json`) to prevent duplicate processing.
 - `models.py`: Data structures (`Recording`, `ApprovalRequest`).
-- `auth_all.py`: Utility script for authenticating the 4 different Google accounts locally to generate `token_*.json` files.
+- `auth_all.py`: Utility script for authenticating the Google accounts locally to generate `token_*.json` files.
 
 ## Data Flow & Architecture
 1. **Fetch**: `standard_upload.py` queries `zoom_api.py` for recent recordings.
@@ -39,4 +39,4 @@
 Requires `.env` (locally) or Railway Dashboard variables:
 - **Zoom**: `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`, `ZOOM_USER_ID`.
 - **Telegram**: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-- **Google Drive**: JSON credential strings for specific class accounts (`GOOGLE_TOKEN_MAIN_JSON`, `GOOGLE_TOKEN_CRASH_JSON`, `GOOGLE_TOKEN_G10_JSON`, `GOOGLE_TOKEN_G9_JSON`).
+- **Google Drive**: JSON credential strings for specific class accounts (`GOOGLE_TOKEN_G10_JSON`, `GOOGLE_TOKEN_G9_JSON`).

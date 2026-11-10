@@ -110,12 +110,8 @@ TELEGRAM_CHAT_ID=your_telegram_chat_id
 # Folder IDs (get these from Google Drive URL: https://drive.google.com/drive/folders/FOLDER_ID)
 FOLDER_ID_1=your_drive_folder_id_1
 FOLDER_ID_2=your_drive_folder_id_2
-FOLDER_ID_3=your_drive_folder_id_3
-FOLDER_ID_4=your_drive_folder_id_4
 
 # OAuth tokens (for local development with file-based auth)
-GOOGLE_TOKEN_MAIN_JSON='{"token":"..."}'
-GOOGLE_TOKEN_CRASH_JSON='{"token":"..."}'
 GOOGLE_TOKEN_G10_JSON='{"token":"..."}'
 GOOGLE_TOKEN_G9_JSON='{"token":"..."}'
 ```
@@ -240,8 +236,8 @@ You can deploy `zoom-drive` to Render either as a **Web Service** (eligible for 
    Under the **Environment** tab, add your credentials:
    - `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`, `ZOOM_USER_ID`
    - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-   - `FOLDER_ID_1`, `FOLDER_ID_2`, `FOLDER_ID_3`, `FOLDER_ID_4`
-   - `GOOGLE_TOKEN_MAIN_JSON`, `GOOGLE_TOKEN_CRASH_JSON`, etc. (paste JSON string directly)
+   - `FOLDER_ID_1`, `FOLDER_ID_2`
+   - `GOOGLE_TOKEN_G10_JSON`, `GOOGLE_TOKEN_G9_JSON`, etc. (paste JSON string directly)
    - `ENABLE_HEALTH_CHECK=true`
 4. **Persistent Storage (Render Disks)**:
    - To preserve state files (`processed.json`, `undo_history.json`) across deploys:
@@ -284,7 +280,7 @@ All configuration must be set as Railway environment variables:
 - Zoom credentials (ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET, ZOOM_USER_ID)
 - Telegram credentials (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 - Google Drive folder IDs (FOLDER_ID_1, FOLDER_ID_2, etc.)
-- Google OAuth tokens as JSON strings (GOOGLE_TOKEN_MAIN_JSON, etc.)
+- Google OAuth tokens as JSON strings (GOOGLE_TOKEN_G10_JSON, etc.)
 
 ## Development Conventions
 
